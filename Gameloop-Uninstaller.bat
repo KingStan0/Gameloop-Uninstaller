@@ -1,22 +1,22 @@
 @echo off
 setlocal EnableExtensions
-title GameLoop Complete Uninstall - Launcher
+title Gameloop Uninstaller - Launcher
 color 0A
 
-:: Uninstall-GameLoop.bat
-:: One-click launcher for Uninstall-GameLoop.ps1 (2025-2026 GameLoop ready).
+:: Gameloop-Uninstaller.bat
+:: One-click launcher for Gameloop-Uninstaller.ps1 (2025-2026 GameLoop ready).
 :: - Self-elevates to admin (required for services / HKLM / Program Files)
 :: - Uses -ExecutionPolicy Bypass for this process only (no system change)
-:: - Forwards all args to the .ps1, e.g.: Uninstall-GameLoop.bat -Silent -KeepGames
+:: - Forwards all args to the .ps1, e.g.: Gameloop-Uninstaller.bat -Silent -KeepGames
 
 cd /d "%~dp0"
 
-set "SCRIPT=%~dp0Uninstall-GameLoop.ps1"
+set "SCRIPT=%~dp0Gameloop-Uninstaller.ps1"
 set "PWSH=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PWSH%" set "PWSH=powershell"
 
 if not exist "%SCRIPT%" (
-    echo [ERROR] Could not find Uninstall-GameLoop.ps1 next to this .bat:
+    echo [ERROR] Could not find Gameloop-Uninstaller.ps1 next to this .bat:
     echo         "%SCRIPT%"
     echo Put both files in the same folder and try again.
     pause
@@ -41,10 +41,10 @@ if not "%errorLevel%"=="0" (
     exit /b 0
 )
 
-echo Launching GameLoop uninstaller...
+echo Launching Gameloop Uninstaller...
 echo Script: "%SCRIPT%"
 echo Args  : %*
-echo Log   : %~dp0GameLoop-Uninstall-*.log
+echo Log   : %~dp0Gameloop-Uninstaller-*.log
 echo.
 
 "%PWSH%" -NoProfile -NoLogo -ExecutionPolicy Bypass -File "%SCRIPT%" %*
@@ -53,9 +53,9 @@ set "EXITCODE=%errorLevel%"
 echo.
 if "%EXITCODE%"=="0" (
     echo [OK] Finished successfully - exit code 0.
-    echo See log in %~dp0GameLoop-Uninstall-*.log
+    echo See log in %~dp0Gameloop-Uninstaller-*.log
 ) else (
-    echo [WARN] Finished with exit code %EXITCODE%. See log in %~dp0GameLoop-Uninstall-*.log
+    echo [WARN] Finished with exit code %EXITCODE%. See log in %~dp0Gameloop-Uninstaller-*.log
 )
 
 :: Skip pause for automation (-Silent or /Silent), otherwise hold window open

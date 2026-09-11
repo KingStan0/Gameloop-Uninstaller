@@ -26,10 +26,10 @@
     Do not prompt for reboot at the end.
 
 .EXAMPLE
-    .\Uninstall-GameLoop.ps1
-    .\Uninstall-GameLoop.ps1 -Silent
-    .\Uninstall-GameLoop.ps1 -Silent -KeepGames
-    .\Uninstall-GameLoop.ps1 -WhatIf
+    .\Gameloop-Uninstaller.ps1
+    .\Gameloop-Uninstaller.ps1 -Silent
+    .\Gameloop-Uninstaller.ps1 -Silent -KeepGames
+    .\Gameloop-Uninstaller.ps1 -WhatIf
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -174,19 +174,19 @@ if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
         } catch { $script:LogDir = $script:TempBase }
     }
 }
-$logFile = Join-Path $script:LogDir ("GameLoop-Uninstall-{0:yyyyMMdd-HHmmss}.log" -f (Get-Date))
+$logFile = Join-Path $script:LogDir ("Gameloop-Uninstaller-{0:yyyyMMdd-HHmmss}.log" -f (Get-Date))
 if (-not $WhatIfPreference) {
     try { Start-Transcript -Path $logFile -Append -ErrorAction SilentlyContinue | Out-Null } catch {}
 }
 
 Write-Host "==============================================" -ForegroundColor Green
-Write-Host " GameLoop Complete Uninstall (2025-2026 ready)" -ForegroundColor Green
+Write-Host " Gameloop Uninstaller (2025-2026 ready)" -ForegroundColor Green
 Write-Host "=============================================="
 Write-Host "Log: $logFile"
 Write-Host "Options: Silent=$Silent KeepGames=$KeepGames SkipOfficial=$SkipOfficialUninstaller"
 
 if (-not (Test-IsAdmin) -and -not $WhatIfPreference) {
-    Write-Error "Please run as Administrator (right-click Uninstall-GameLoop.bat -> Run as administrator). Aborting."
+    Write-Error "Please run as Administrator (right-click Gameloop-Uninstaller.bat -> Run as administrator). Aborting."
     try { Stop-Transcript | Out-Null } catch {}
     exit 1
 }
@@ -607,7 +607,7 @@ foreach ($t in @( "$script:TempBase\Tencent", "$script:TempBase\GameLoop", "$scr
 
 # Rotate old logs in the log folder (keep last 10)
 try {
-    Get-ChildItem -LiteralPath $script:LogDir -Filter "GameLoop-Uninstall-*.log" -ErrorAction SilentlyContinue |
+    Get-ChildItem -LiteralPath $script:LogDir -Filter "Gameloop-Uninstaller-*.log" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -Skip 10 | ForEach-Object {
             try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } catch {}
         }

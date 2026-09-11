@@ -1,4 +1,5 @@
-# GameLoop uninstall run artifacts - contain username / machine details
+# Gameloop Uninstaller run artifacts - contain username / machine details
+Gameloop-Uninstaller-*.log
 GameLoop-Uninstall-*.log
 .writetest-*.tmp
 GameLoop-RegBackup/
