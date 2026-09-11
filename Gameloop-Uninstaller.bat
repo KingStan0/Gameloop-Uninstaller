@@ -41,10 +41,13 @@ if not "%errorLevel%"=="0" (
     exit /b 0
 )
 
-echo Launching Gameloop Uninstaller...
+echo ======================================================
+echo  GAMELOOP UNINSTALLER - one-click launcher
+echo ======================================================
 echo Script: "%SCRIPT%"
 echo Args  : %*
 echo Log   : %~dp0Gameloop-Uninstaller-*.log
+echo ------------------------------------------------------
 echo.
 
 "%PWSH%" -NoProfile -NoLogo -ExecutionPolicy Bypass -File "%SCRIPT%" %*

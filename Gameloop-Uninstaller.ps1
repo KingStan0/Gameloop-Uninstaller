@@ -46,11 +46,45 @@ $ProgressPreference = 'SilentlyContinue'
 # Temp base with fallback (SYSTEM account may lack $env:TEMP)
 $script:TempBase = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
 
+# Accent color for headers (change in one place to re-theme)
+$script:Accent = 'Cyan'
+
+# Live counters for the end-of-run summary panel
+$script:Stats = [ordered]@{
+    Processes = 0; Services = 0; Firewall = 0; Tasks = 0; Startup = 0
+    RegKeys = 0; RegValues = 0; Folders = 0; Shortcuts = 0; Temp = 0
+}
+function Add-Stat {
+    param([string]$Name)
+    $script:Stats[$Name]++
+}
+
 # ---------- Helpers ----------
 function Write-Step {
     param([string]$Message)
     Write-Host ""
-    Write-Host "==> $Message" -ForegroundColor Cyan
+    if ($Message -match '^Step (\d+/\d+)\s*-\s*(.*)$') {
+        Write-Host ("  [{0}] " -f $Matches[1]) -ForegroundColor $script:Accent -NoNewline
+        Write-Host $Matches[2] -ForegroundColor White
+    } else {
+        Write-Host ("  -- {0} --" -f $Message) -ForegroundColor $script:Accent
+    }
+}
+
+function Write-Ok {
+    param([string]$Message)
+    Write-Host "  [+] " -ForegroundColor Green -NoNewline
+    Write-Host $Message
+}
+
+function Write-Skip {
+    param([string]$Message)
+    Write-Host "  [-] $Message" -ForegroundColor DarkGray
+}
+
+function Write-Found {
+    param([string]$Message)
+    Write-Host "  [>] $Message" -ForegroundColor Gray
 }
 
 function Test-IsAdmin {
@@ -77,12 +111,12 @@ function Stop-GameLoopProcess {
                         try { $exePath = (Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $pr.Id) -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExecutablePath) } catch {}
                     }
                     if ($exePath -notmatch 'GameLoop|TxGameAssistant|Tencent') {
-                        Write-Host "  Skipped shared process $($pr.ProcessName) ($($pr.Id)) outside GameLoop path"
+                        Write-Skip "shared process $($pr.ProcessName) ($($pr.Id)) outside GameLoop path"
                         continue
                     }
                 }
                 if ($PSCmdlet.ShouldProcess("$($pr.ProcessName) (PID $($pr.Id))", "Stop-Process")) {
-                    try { Stop-Process -Id $pr.Id -Force -ErrorAction Stop; Write-Host "  Killed $($pr.ProcessName) ($($pr.Id))" }
+                    try { Stop-Process -Id $pr.Id -Force -ErrorAction Stop; Write-Ok "stopped $($pr.ProcessName) ($($pr.Id))"; Add-Stat 'Processes' }
                     catch { Write-Warning "  Could not kill $($pr.ProcessName): $_" }
                 }
             }
@@ -92,7 +126,7 @@ function Stop-GameLoopProcess {
 
 function Remove-PathSafe {
     [CmdletBinding(SupportsShouldProcess = $true)]
-    param([string]$Path)
+    param([string]$Path, [string]$Stat = 'Paths')
     if ([string]::IsNullOrWhiteSpace($Path)) { return }
     # Expand env vars, keep as literal
     $expanded = [Environment]::ExpandEnvironmentVariables($Path).Trim().TrimEnd('\')
@@ -134,7 +168,8 @@ function Remove-PathSafe {
         if ($PSCmdlet.ShouldProcess($expanded, "Remove-Item -Recurse -Force")) {
             try {
                 Remove-Item -LiteralPath $expanded -Recurse -Force -ErrorAction Stop
-                Write-Host "  Removed: $expanded"
+                Write-Ok "removed: $expanded"
+                if ($script:Stats.Contains($Stat)) { Add-Stat $Stat }
             } catch { Write-Warning "  Could not remove $expanded : $_" }
         }
     }
@@ -153,7 +188,7 @@ function Remove-RegKeySafe {
     }
     if (Test-Path -LiteralPath $Path) {
         if ($PSCmdlet.ShouldProcess($Path, "Remove registry key")) {
-            try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; Write-Host "  Removed reg: $Path" }
+            try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; Write-Ok "removed reg: $Path"; Add-Stat 'RegKeys' }
             catch { Write-Warning "  Could not remove reg $Path : $_" }
         }
     }
@@ -179,11 +214,14 @@ if (-not $WhatIfPreference) {
     try { Start-Transcript -Path $logFile -Append -ErrorAction SilentlyContinue | Out-Null } catch {}
 }
 
-Write-Host "==============================================" -ForegroundColor Green
-Write-Host " Gameloop Uninstaller (2025-2026 ready)" -ForegroundColor Green
-Write-Host "=============================================="
-Write-Host "Log: $logFile"
-Write-Host "Options: Silent=$Silent KeepGames=$KeepGames SkipOfficial=$SkipOfficialUninstaller"
+Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
+Write-Host "  |  GAMELOOP UNINSTALLER                                  |" -ForegroundColor Green
+Write-Host "  |  Clean removal for GameLoop 7.x / TenStore (2025-2026) |" -ForegroundColor Gray
+Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
+Write-Host ("  Log      : {0}" -f $logFile) -ForegroundColor DarkGray
+Write-Host ("  Started  : {0:yyyy-MM-dd HH:mm:ss}" -f (Get-Date)) -ForegroundColor DarkGray
+Write-Host ("  Options  : Silent={0} KeepGames={1} SkipOfficial={2}" -f $Silent, $KeepGames, $SkipOfficialUninstaller) -ForegroundColor DarkGray
+$script:Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 if (-not (Test-IsAdmin) -and -not $WhatIfPreference) {
     Write-Error "Please run as Administrator (right-click Gameloop-Uninstaller.bat -> Run as administrator). Aborting."
@@ -212,11 +250,11 @@ foreach ($key in @("HKCU\Software\Tencent", "HKLM\SOFTWARE\Tencent", "HKLM\SOFTW
             # Skip missing keys silently (no reg.exe ERROR noise in the log)
             $psKey = $key -replace '^HKCU\\', 'HKCU:\' -replace '^HKLM\\', 'HKLM:\'
             if (-not (Test-Path -LiteralPath $psKey)) {
-                Write-Host "  Skipped backup (key not present): $key"
+                Write-Skip "backup skipped (key not present): $key"
                 continue
             }
             $null = & reg.exe export $key $out /y 2>$null
-            if (Test-Path $out) { Write-Host "  Backed up $key -> $out" }
+            if (Test-Path $out) { Write-Ok "backed up $key -> $out" }
         }
     } catch {}
 }
@@ -273,10 +311,10 @@ if (-not $SkipOfficialUninstaller) {
                         $isGameLoop = ($display -match 'GameLoop|MobileGamePC|Tencent Gaming|TxGameAssistant|TenStore') -or
                                       ($publisher -match 'Tencent|Hong Kong Gathering Media|GameLoop|TenStore' -and $display -match 'Game|Emulator|Assistant|Loop|Store')
                         if ($isGameLoop) {
-                            if ($uninstall) { Write-Host "  Found: $display -> $uninstall" }
+                            if ($uninstall) { Write-Found "found: $display -> $uninstall" }
                             if (-not [string]::IsNullOrWhiteSpace($installLoc) -and (Test-Path -LiteralPath $installLoc)) {
                                 $script:CustomInstallPaths += $installLoc
-                                Write-Host "  Found custom install location: $installLoc"
+                                Write-Found "custom install location: $installLoc"
                             }
                             # Prefer QuietUninstallString, strip quotes for exe lookup
                             $us = $quiet
@@ -295,7 +333,7 @@ if (-not $SkipOfficialUninstaller) {
     foreach ($exe in $official) {
         $exeExp = [Environment]::ExpandEnvironmentVariables($exe)
         if (Test-Path -LiteralPath $exeExp) {
-            Write-Host "  Running official uninstaller: $exeExp"
+            Write-Found "running official uninstaller: $exeExp"
             if ($PSCmdlet.ShouldProcess($exeExp, "Run official uninstaller")) {
                 # Per-exe silent flags (GameLoop uses mixed installers: custom /uninstall, Inno /VERYSILENT, NSIS /S)
                 $flags = @("/uninstall", "/quiet")
@@ -308,7 +346,7 @@ if (-not $SkipOfficialUninstaller) {
                         Write-Warning "  Uninstaller timed out after 180s, killing PID $($proc.Id)"
                         try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
                     } else {
-                        Write-Host "  Exit code: $($proc.ExitCode)"
+                        Write-Found "exit code: $($proc.ExitCode)"
                     }
                 } catch {
                     Write-Warning "  Silent uninstall failed: $_"
@@ -356,7 +394,7 @@ $stragglers = @("GameLoopEmulator.exe","aow_exe.exe","QMEmulatorService.exe","An
 for ($i = 1; $i -le 3; $i++) {
     $remaining = @(Get-Process -Name ($stragglers -replace '\.exe$','') -ErrorAction SilentlyContinue)
     if ($remaining.Count -eq 0) { break }
-    Write-Host "  Retry pass $i for $($remaining.Count) straggler(s)..."
+    Write-Found "retry pass $i for $($remaining.Count) straggler(s)..."
     Stop-GameLoopProcess -Names $stragglers
     if ($i -lt 3 -and -not $WhatIfPreference) { Start-Sleep -Seconds 2 }
 }
@@ -367,12 +405,12 @@ foreach ($svc in @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv","
     try {
         $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
         if ($s) {
-            Write-Host "  Found service: $svc ($($s.Status))"
+            Write-Found "service: $svc ($($s.Status))"
             if ($PSCmdlet.ShouldProcess($svc, "Stop-Service + sc delete")) {
                 try { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } catch {}
                 Start-Sleep -Seconds 1
                 & sc.exe delete $svc 2>$null | Out-Null
-                Write-Host "  Deleted service: $svc"
+                Write-Ok "deleted service: $svc"; Add-Stat 'Services'
             }
         }
     } catch { Write-Warning "  Service $svc : $_" }
@@ -393,11 +431,11 @@ try {
     }
     foreach ($r in $rules) {
         if ($PSCmdlet.ShouldProcess($r.DisplayName, "Remove-NetFirewallRule")) {
-            try { Remove-NetFirewallRule -Name $r.Name -ErrorAction Stop; Write-Host "  Removed firewall rule: $($r.DisplayName)" }
+            try { Remove-NetFirewallRule -Name $r.Name -ErrorAction Stop; Write-Ok "removed firewall rule: $($r.DisplayName)"; Add-Stat 'Firewall' }
             catch { Write-Warning "  Firewall rule failed: $_" }
         }
     }
-    if (@($rules).Count -eq 0) { Write-Host "  No GameLoop firewall rules found." }
+    if (@($rules).Count -eq 0) { Write-Skip "no GameLoop firewall rules found" }
 } catch { Write-Warning "  Firewall cleanup: $_" }
 
 try {
@@ -411,11 +449,11 @@ try {
     $tasks = @($tasks | Sort-Object TaskPath, TaskName -Unique)
     foreach ($t in $tasks) {
         if ($PSCmdlet.ShouldProcess("$($t.TaskPath)$($t.TaskName)", "Unregister-ScheduledTask")) {
-            try { Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Confirm:$false -ErrorAction Stop; Write-Host "  Removed task: $($t.TaskPath)$($t.TaskName)" }
+            try { Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Confirm:$false -ErrorAction Stop; Write-Ok "removed task: $($t.TaskPath)$($t.TaskName)"; Add-Stat 'Tasks' }
             catch { Write-Warning "  Task failed: $_" }
         }
     }
-    if (@($tasks).Count -eq 0) { Write-Host "  No GameLoop scheduled tasks found." }
+    if (@($tasks).Count -eq 0) { Write-Skip "no GameLoop scheduled tasks found" }
 } catch { Write-Warning "  Task cleanup: $_" }
 
 # Startup entries (Run keys + Startup folders) - GameLoop only, never whole keys
@@ -426,7 +464,7 @@ foreach ($runKey in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Run", "HK
             foreach ($prop in $props) {
                 if ("$($prop.Value)" -match 'GameLoop|TxGameAssistant|TenStore|QMEmulator|AndroidEmulator|aow_exe') {
                     if ($PSCmdlet.ShouldProcess("$runKey\$($prop.Name)", "Remove Run value")) {
-                        try { Remove-ItemProperty -LiteralPath $runKey -Name $prop.Name -Force -ErrorAction Stop; Write-Host "  Removed Run value: $($prop.Name)" }
+                        try { Remove-ItemProperty -LiteralPath $runKey -Name $prop.Name -Force -ErrorAction Stop; Write-Ok "removed Run value: $($prop.Name)"; Add-Stat 'Startup' }
                         catch { Write-Warning "  Run value failed: $_" }
                     }
                 }
@@ -473,8 +511,8 @@ foreach ($parent in @("HKCU:\Software\Tencent", "HKLM:\SOFTWARE\Tencent", "HKLM:
         if ((Test-Path -LiteralPath $parent) -and $PSCmdlet.ShouldProcess($parent, "Remove parent Tencent key if empty")) {
             $kids = @(Get-ChildItem -LiteralPath $parent -ErrorAction SilentlyContinue)
             $vals = @((Get-ItemProperty -LiteralPath $parent -ErrorAction SilentlyContinue).PSObject.Properties | Where-Object { $_.Name -notmatch '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$' })
-            if ($kids.Count -eq 0 -and $vals.Count -eq 0) { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue; Write-Host "  Removed empty parent: $parent" }
-            else { Write-Host "  Kept parent $parent (still has $($kids.Count) subkey(s), $($vals.Count) value(s) - may belong to other Tencent apps)" }
+            if ($kids.Count -eq 0 -and $vals.Count -eq 0) { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue; Write-Ok "removed empty parent: $parent"; Add-Stat 'RegKeys' }
+            else { Write-Skip "kept parent $parent ($($kids.Count) subkey(s), $($vals.Count) value(s) - other Tencent apps?)" }
         }
     } catch {}
 }
@@ -500,7 +538,7 @@ foreach ($muiKey in @("HKCU:\Software\Classes\Local Settings\Software\Microsoft\
             foreach ($prop in $muiProps) {
                 if ($prop.Name -match 'GameLoop|TxGameAssistant|TenStore|MobileGamePC|AndroidEmulator|AppMarket') {
                     if ($PSCmdlet.ShouldProcess("$muiKey\$($prop.Name)", "Remove MuiCache value")) {
-                        try { Remove-ItemProperty -LiteralPath $muiKey -Name $prop.Name -Force -ErrorAction Stop; Write-Host "  Removed MuiCache: $($prop.Name)" }
+                        try { Remove-ItemProperty -LiteralPath $muiKey -Name $prop.Name -Force -ErrorAction Stop; Write-Ok "removed MuiCache: $($prop.Name)"; Add-Stat 'RegValues' }
                         catch { Write-Warning "  MuiCache failed: $_" }
                     }
                 }
@@ -552,7 +590,7 @@ $folders = $folders | Select-Object -Unique
 foreach ($f in $folders) {
     # Respect -KeepGames for Documents\Tencent Files
     if ($KeepGames -and $f -like "*Documents\Tencent Files*") {
-        Write-Host "  Skipped (KeepGames): $f"
+        Write-Skip "KeepGames, skipped: $f"
         continue
     }
     # Never delete a drive root or bare Temp
@@ -560,7 +598,7 @@ foreach ($f in $folders) {
         Write-Warning "  Refused to delete protected path: $f"
         continue
     }
-    Remove-PathSafe $f
+    Remove-PathSafe $f -Stat 'Folders'
 }
 
 # Remove parent Tencent folders only if GameLoop was the sole content
@@ -569,7 +607,7 @@ foreach ($tencentParent in @("$env:ProgramFiles\Tencent", "${env:ProgramFiles(x8
         if ((Test-Path -LiteralPath $tencentParent) -and $PSCmdlet.ShouldProcess($tencentParent, "Remove empty parent Tencent folder")) {
             if (@(Get-ChildItem -LiteralPath $tencentParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
                 Remove-Item -LiteralPath $tencentParent -Force -ErrorAction SilentlyContinue
-                Write-Host "  Removed empty parent: $tencentParent"
+                Write-Ok "removed empty parent: $tencentParent"; Add-Stat 'Folders'
             }
         }
     } catch {}
@@ -594,15 +632,15 @@ if (-not [string]::IsNullOrWhiteSpace($knownDesktop) -and ($knownDesktop -ne "$e
 }
 # Start Menu TxGameAssistant folder (directory, not just .lnk)
 foreach ($startDir in @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\TxGameAssistant", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\TxGameAssistant")) {
-    if (Test-Path -LiteralPath $startDir) { Remove-PathSafe $startDir }
+    if (Test-Path -LiteralPath $startDir) { Remove-PathSafe $startDir -Stat 'Shortcuts' }
 }
-foreach ($s in $shortcuts) { Remove-PathSafe $s }
+foreach ($s in $shortcuts) { Remove-PathSafe $s -Stat 'Shortcuts' }
 
 # GameLoop-only temp (never whole %TEMP%)
 Write-Step "Cleaning GameLoop-only temp files"
 $sysTemp = Join-Path $env:SystemRoot "Temp"
 foreach ($t in @( "$script:TempBase\Tencent", "$script:TempBase\GameLoop", "$script:TempBase\TBSdk", "$script:TempBase\TxGameAssistant", "$env:LOCALAPPDATA\Temp\Tencent", (Join-Path $sysTemp "Tencent"), (Join-Path $sysTemp "GameLoop") )) {
-    Remove-PathSafe $t
+    Remove-PathSafe $t -Stat 'Temp'
 }
 
 # Rotate old logs in the log folder (keep last 10)
@@ -633,7 +671,7 @@ if ($WhatIfPreference) {
     $leftoverSvcs = @(Get-Service -Name @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv") -ErrorAction SilentlyContinue)
     $leftoverProcs = @(Get-Process -Name @("GameLoop","GameLoopEmulator","aow_exe","QMEmulatorService","AndroidEmulatorEn") -ErrorAction SilentlyContinue)
     if ($leftover.Count -eq 0 -and $leftoverSvcs.Count -eq 0 -and $leftoverProcs.Count -eq 0) {
-        Write-Host "Cleanup looks complete. No GameLoop folders, services or processes remain." -ForegroundColor Green
+        Write-Ok "cleanup looks complete - no GameLoop folders, services or processes remain"
     } else {
         if ($leftover.Count -gt 0) { Write-Warning ("Remaining folders (may need reboot to unlock driver aow_drv): " + ($leftover -join ", ")) }
         if ($leftoverSvcs.Count -gt 0) { Write-Warning ("Remaining services: " + (($leftoverSvcs | Select-Object -ExpandProperty Name) -join ", ")) }
@@ -641,9 +679,28 @@ if ($WhatIfPreference) {
     }
 }
 
+$script:Stopwatch.Stop()
+$labels = [ordered]@{
+    Processes = 'Processes stopped'; Services = 'Services removed'
+    Firewall = 'Firewall rules'; Tasks = 'Scheduled tasks'; Startup = 'Startup entries'
+    RegKeys = 'Registry keys'; RegValues = 'Registry values'
+    Folders = 'Folders'; Shortcuts = 'Shortcuts'; Temp = 'Temp items'
+}
+$total = 0
+foreach ($v in $script:Stats.Values) { $total += $v }
 Write-Host ""
-Write-Host "Done. Log saved to: $logFile" -ForegroundColor Green
-Write-Host "Registry backup in: $backupDir"
+Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
+Write-Host "  |  SUMMARY                                             |" -ForegroundColor Green
+Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
+foreach ($k in $script:Stats.Keys) {
+    Write-Host ("    {0,-18} {1,5}" -f $labels[$k], $script:Stats[$k]) -ForegroundColor Gray
+}
+Write-Host ("    {0,-18} {1,5}" -f 'TOTAL', $total) -ForegroundColor White
+Write-Host ("    {0,-18} {1,5}" -f 'Elapsed', $script:Stopwatch.Elapsed.ToString('mm\:ss')) -ForegroundColor Gray
+Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
+Write-Host ""
+Write-Ok "done - log saved to: $logFile"
+Write-Found "registry backup in: $backupDir"
 try { Stop-Transcript | Out-Null } catch {}
 
 if (-not $NoRebootPrompt -and -not $Silent -and -not $WhatIfPreference) {
