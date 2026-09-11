@@ -135,7 +135,7 @@ function Stop-GameLoopProcess {
 
 function Remove-PathSafe {
     [CmdletBinding(SupportsShouldProcess = $true)]
-    param([string]$Path, [string]$Stat = 'Paths')
+    param([string]$Path, [string]$Stat = 'Paths', [switch]$Trusted)
     if ([string]::IsNullOrWhiteSpace($Path)) { return }
     # Expand env vars, keep as literal
     $expanded = [Environment]::ExpandEnvironmentVariables($Path).Trim().TrimEnd('\')
@@ -162,9 +162,14 @@ function Remove-PathSafe {
         return
     }
     # Block Windows except GameLoop-only temp under Windows\Temp.
+    # Trusted paths (explicitly registered by GameLoop's own installer) may use
+    # any Windows\Temp subfolder - Temp is scratch space by design. Anything
+    # else under Windows (System32, WinSxS, ...) is always refused.
     if ($expanded -match '^[A-Z]:\\Windows([\\/]|$)') {
-        if ($expanded -match '\\Temp\\(Tencent|GameLoop|TxGameAssistant)([\\/]|$)') {
-            # Allowed: C:\Windows\Temp\Tencent, ...\GameLoop - GameLoop-only temp.
+        $gameTemp = $expanded -match '\\Temp\\(Tencent|GameLoop|TxGameAssistant)([\\/]|$)'
+        $anySysTemp = $expanded -match '\\Temp\\[^\\/]+([\\/]|$)'
+        if ($gameTemp -or ($Trusted -and $anySysTemp)) {
+            # Allowed: GameLoop temp, or installer-registered Temp subfolder.
         } else {
             Write-Warning "  Refused to delete protected path: $expanded"
             return
@@ -338,6 +343,7 @@ if (-not $SkipOfficialUninstaller) {
                                       ($publisher -match 'Tencent|Hong Kong Gathering Media|GameLoop|TenStore' -and $display -match 'Game|Emulator|Assistant|Loop|Store')
                         if ($isGameLoop) {
                             if ($uninstall) { Write-Found "installed program: $display"; Write-Detail $uninstall }
+                            else { Write-Found "installed program (no uninstaller registered): $display" }
                             if (-not [string]::IsNullOrWhiteSpace($installLoc) -and (Test-Path -LiteralPath $installLoc)) {
                                 $script:CustomInstallPaths += $installLoc
                                 Write-Found "its files live in: $installLoc"
@@ -529,10 +535,13 @@ try { if (-not (Get-PSDrive -Name HKCR -ErrorAction SilentlyContinue)) { New-PSD
 
 Remove-RegKeySafe "HKCU:\Software\Tencent\GameLoop"
 Remove-RegKeySafe "HKCU:\Software\Tencent\MobileGamePC"
+Remove-RegKeySafe "HKCU:\Software\Tencent\TGB"
 Remove-RegKeySafe "HKLM:\SOFTWARE\Tencent\GameLoop"
 Remove-RegKeySafe "HKLM:\SOFTWARE\Tencent\MobileGamePC"
+Remove-RegKeySafe "HKLM:\SOFTWARE\Tencent\TGB"
 Remove-RegKeySafe "HKLM:\SOFTWARE\WOW6432Node\Tencent\GameLoop"
 Remove-RegKeySafe "HKLM:\SOFTWARE\WOW6432Node\Tencent\MobileGamePC"
+Remove-RegKeySafe "HKLM:\SOFTWARE\WOW6432Node\Tencent\TGB"
 Remove-RegKeySafe "HKCR:\GameLoop"
 Remove-RegKeySafe "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\GameLoop"
 Remove-RegKeySafe "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\GameLoop"
@@ -561,7 +570,7 @@ foreach ($parent in @("HKCU:\Software\Tencent", "HKLM:\SOFTWARE\Tencent", "HKLM:
 try {
     if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) { New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS -ErrorAction SilentlyContinue | Out-Null }
     Get-ChildItem "HKU:\" -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-' } | ForEach-Object {
-        foreach ($sub in @("Software\Tencent\GameLoop", "Software\Tencent\MobileGamePC")) {
+        foreach ($sub in @("Software\Tencent\GameLoop", "Software\Tencent\MobileGamePC", "Software\Tencent\TGB")) {
             $full = "HKU:\$($_.PSChildName)\$sub"
             if (Test-Path -LiteralPath $full) {
                 Remove-RegKeySafe $full
@@ -615,9 +624,16 @@ $knownDocs = [Environment]::GetFolderPath('MyDocuments')
 if (-not [string]::IsNullOrWhiteSpace($knownDocs) -and ($knownDocs -ne "$env:USERPROFILE\Documents")) {
     $folders += (Join-Path $knownDocs "Tencent Files")
 }
-# Custom install locations discovered from Uninstall registry (e.g. D:\Games\GameLoop)
+# Custom install locations discovered from Uninstall registry (e.g. D:\Games\GameLoop).
+# Trusted: GameLoop's own installer registered them, so they bypass the
+# Windows\Temp name restriction (drive roots and system folders still refused).
 foreach ($custom in @($script:CustomInstallPaths)) {
-    if (-not [string]::IsNullOrWhiteSpace($custom)) { $folders += $custom }
+    if ([string]::IsNullOrWhiteSpace($custom)) { continue }
+    if ($KeepGames -and $custom -like "*Documents\Tencent Files*") {
+        Write-Skip "kept your games folder (you chose -KeepGames): $custom"
+        continue
+    }
+    Remove-PathSafe $custom -Stat 'Folders' -Trusted
 }
 # Also scan fixed drives for installs on D:, E:, etc. (old bat did C-G manually)
 try {
@@ -640,11 +656,8 @@ foreach ($f in $folders) {
         Write-Skip "kept your games folder (you chose -KeepGames): $f"
         continue
     }
-    # Never delete a drive root or bare Temp
-    if ($f -match '^[A-Z]:\\?$' -or $f -match '^[A-Z]:\\Temp\\?$' -or $f -match '^[A-Z]:\\Windows') {
-        Write-Warning "  Refused to delete protected path: $f"
-        continue
-    }
+    # Safety refusals (drive roots, Windows, bare system folders) are handled
+    # inside Remove-PathSafe so custom install paths are judged correctly.
     Remove-PathSafe $f -Stat 'Folders'
 }
 
@@ -749,6 +762,10 @@ Write-Host ("    {0,-20} {1,5}" -f 'TOTAL', $total) -ForegroundColor White
 Write-Host ("    {0,-20} {1,5}" -f 'Time taken', $script:Stopwatch.Elapsed.ToString('mm\:ss')) -ForegroundColor Gray
 Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
 Write-Host ""
+if (($total -eq 0) -and (-not $WhatIfPreference)) {
+    Write-Host "  Your PC was already clean - there was nothing to remove." -ForegroundColor Green
+    Write-Host ""
+}
 Write-Host "  What is next:" -ForegroundColor White
 Write-Host "    1. Restart your PC to finish (unlocks any files still in use)." -ForegroundColor Gray
 Write-Host "    2. Want GameLoop back? Get it fresh from the official site." -ForegroundColor Gray
