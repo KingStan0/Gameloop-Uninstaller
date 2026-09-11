@@ -23,25 +23,32 @@ if not exist "%SCRIPT%" (
     exit /b 1
 )
 
-:: Check admin; self-elevate if needed
+:: Check admin; self-elevate if needed.
+:: NOTE: elevation lives under :elevate (outside any parens) so folder
+:: names containing ")" - e.g. C:\Users\Anna (Work)\... - cannot break it.
 net session >nul 2>&1
-if not "%errorLevel%"=="0" (
-    echo Requesting administrator rights...
-    echo A new window will open to continue. If Windows asks
-    echo for permission, please click Yes - the cleanup needs
-    echo it to remove system files properly.
-    :: Escape single quotes for PowerShell single-quoted strings (e.g. O'Brien -> O''Brien)
-    set "SELF=%~f0"
-    set "SELF=%SELF:'=''%"
-    if "%~1"=="" (
-        "%PWSH%" -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%SELF%' -Verb RunAs"
-    ) else (
-        set "ARGS=%*"
-        set "ARGS=%ARGS:'=''%"
-        "%PWSH%" -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%SELF%' -ArgumentList '%ARGS%' -Verb RunAs"
-    )
-    exit /b 0
-)
+if "%errorLevel%"=="0" goto :admin_ok
+goto :elevate
+
+:elevate
+echo Requesting administrator rights...
+echo A new window will open to continue. If Windows asks
+echo for permission, please click Yes - the cleanup needs
+echo it to remove system files properly.
+:: Escape single quotes for PowerShell single-quoted strings (e.g. O'Brien -> O''Brien)
+set "SELF=%~f0"
+set "SELF=%SELF:'=''%"
+if "%~1"=="" goto :elevate_noargs
+set "ARGS=%*"
+set "ARGS=%ARGS:'=''%"
+"%PWSH%" -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%SELF%' -ArgumentList '%ARGS%' -Verb RunAs"
+exit /b 0
+
+:elevate_noargs
+"%PWSH%" -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%SELF%' -Verb RunAs"
+exit /b 0
+
+:admin_ok
 
 echo ======================================================
 echo  GAMELOOP UNINSTALLER - one-click cleanup

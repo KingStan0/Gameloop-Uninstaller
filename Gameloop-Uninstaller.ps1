@@ -368,26 +368,37 @@ if (-not $SkipOfficialUninstaller) {
             Write-Found "running GameLoop's own uninstaller - if it opens a window, please follow it:"
             Write-Detail $exeExp
             if ($PSCmdlet.ShouldProcess($exeExp, "Run official uninstaller")) {
-                # Per-exe silent flags (GameLoop uses mixed installers: custom /uninstall, Inno /VERYSILENT, NSIS /S)
+                # Silent flags per installer family (TUninstall = NSIS-style /S).
                 $flags = @("/uninstall", "/quiet")
                 if ($exeExp -match 'TUninstall\.exe$') { $flags = @("/S") }
-                elseif ($exeExp -match 'Uninstall\.exe$') { $flags = @("/uninstall", "/quiet") }
                 try {
                     $proc = Start-Process -FilePath $exeExp -ArgumentList $flags -PassThru -ErrorAction Stop
-                    $exited = $proc.WaitForExit(180000)
+                    try { $exited = $proc.WaitForExit(180000) }
+                    catch { $exited = $true }  # Already gone: nothing left to wait for.
                     if (-not $exited) {
-                        Write-Warning "  Uninstaller timed out after 180s, killing PID $($proc.Id)"
-                        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+                        # Revalidate the PID before killing - it may belong to
+                        # another app by now. Never kill on a stale PID.
+                        $stillThere = $false
+                        try {
+                            $recheck = Get-Process -Id $proc.Id -ErrorAction Stop
+                            $stillThere = ($recheck.ProcessName -eq [System.IO.Path]::GetFileNameWithoutExtension($exeExp))
+                        } catch { $stillThere = $false }
+                        if ($stillThere) {
+                            Write-Warning "  Uninstaller timed out after 180s, stopping it (PID $($proc.Id))"
+                            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+                        } else {
+                            Write-Found "uninstaller already gone - moving on"
+                        }
                     } else {
                         Write-Found "its uninstaller finished (result code $($proc.ExitCode))"
                     }
                 } catch {
                     Write-Warning "  Quiet mode did not work for this uninstaller: $_"
                     if (-not $Silent) {
-                        Write-Host "  Opening it normally instead - just click through its window..."
+                        Write-Found "opening it normally instead - just click through its window..."
                         try {
                             $proc2 = Start-Process -FilePath $exeExp -PassThru -ErrorAction Stop
-                            $proc2.WaitForExit(300000) | Out-Null
+                            try { $proc2.WaitForExit(300000) | Out-Null } catch {}
                         } catch { Write-Warning "  Failed: $_" }
                     }
                 }
@@ -433,12 +444,45 @@ for ($i = 1; $i -le 3; $i++) {
     Stop-GameLoopProcess -Names $stragglers
     if ($i -lt 3 -and -not $WhatIfPreference) { Start-Sleep -Seconds 2 }
 }
+# Catch-all: any remaining process actually running from a GameLoop folder
+# (catches renamed or future helper exes the fixed list does not know yet).
+# Never touches anything outside GameLoop folders, and never this script.
+try {
+    # .Path throws on protected system processes - swallow per-process, keep sweeping.
+    $strays = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        if ($_.Id -eq $PID) { return $false }
+        $exePath = ''
+        try { $exePath = $_.Path } catch { return $false }
+        (-not [string]::IsNullOrWhiteSpace($exePath)) -and ($exePath -match 'GameLoop|TxGameAssistant')
+    })
+    foreach ($stray in $strays) {
+        if ($PSCmdlet.ShouldProcess("$($stray.ProcessName) (PID $($stray.Id))", "Stop-Process")) {
+            try { Stop-Process -Id $stray.Id -Force -ErrorAction Stop; Write-Ok "closed leftover app: $($stray.ProcessName) ($($stray.Id))"; Add-Stat 'Processes' }
+            catch { Write-Warning "  Could not close $($stray.ProcessName): $_" }
+        }
+    }
+    if ($strays.Count -gt 0 -and -not $WhatIfPreference) { Start-Sleep -Seconds 2 }
+} catch { Write-Warning "  leftover-app sweep: $_" }
 
 # ---------- 3. Stop + delete services ----------
 Write-Step "Step 3/7 - Removing GameLoop background helpers"
 Write-Detail "GameLoop installs hidden helpers that start with Windows."
 Write-Detail "We remove the GameLoop ones only."
-foreach ($svc in @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv","Tensafe")) {
+$svcNames = @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv","Tensafe")
+# Auto-discovery: services whose program lives in a GameLoop folder
+# (catches future/renamed helpers the fixed list does not know yet).
+try {
+    $found = @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+        Where-Object { "$($_.PathName)" -match 'GameLoop|TxGameAssistant|TenStore' } |
+        Select-Object -ExpandProperty Name)
+    foreach ($extra in $found) {
+        if (-not [string]::IsNullOrWhiteSpace($extra) -and ($svcNames -notcontains $extra)) {
+            Write-Found "discovered GameLoop helper: $extra"
+            $svcNames += $extra
+        }
+    }
+} catch { Write-Warning "  helper discovery: $_" }
+foreach ($svc in $svcNames) {
     try {
         $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
         if ($s) {
@@ -559,7 +603,8 @@ foreach ($parent in @("HKCU:\Software\Tencent", "HKLM:\SOFTWARE\Tencent", "HKLM:
     try {
         if ((Test-Path -LiteralPath $parent) -and $PSCmdlet.ShouldProcess($parent, "Remove parent Tencent key if empty")) {
             $kids = @(Get-ChildItem -LiteralPath $parent -ErrorAction SilentlyContinue)
-            $vals = @((Get-ItemProperty -LiteralPath $parent -ErrorAction SilentlyContinue).PSObject.Properties | Where-Object { $_.Name -notmatch '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$' })
+            # An empty "(default)" value does not count as content - ignore it.
+            $vals = @((Get-ItemProperty -LiteralPath $parent -ErrorAction SilentlyContinue).PSObject.Properties | Where-Object { $_.Name -notmatch '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider|\(default\))$' -and -not [string]::IsNullOrWhiteSpace("$($_.Value)") })
             if ($kids.Count -eq 0 -and $vals.Count -eq 0) { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue; Write-Ok "removed empty settings group: $parent"; Add-Stat 'RegKeys' }
             else { Write-Skip "kept $parent - still used by your other Tencent apps" }
         }
