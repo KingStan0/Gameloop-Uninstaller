@@ -1,4 +1,5 @@
-﻿<#
+﻿#Requires -Version 5.1
+<#
 .SYNOPSIS
     Completely uninstalls GameLoop / Tencent Gaming Buddy (old TxGameAssistant + new Tencent\GameLoop / TenStore).
 
@@ -43,6 +44,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 
+# Custom install locations discovered in Step 1 (e.g. D:\Games\GameLoop)
+$script:CustomInstallPaths = @()
+
 # Temp base with fallback (SYSTEM account may lack $env:TEMP)
 $script:TempBase = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
 
@@ -56,7 +60,7 @@ $script:Stats = [ordered]@{
 }
 function Add-Stat {
     param([string]$Name)
-    $script:Stats[$Name]++
+    if ($script:Stats.Contains($Name)) { $script:Stats[$Name]++ }
 }
 
 # ---------- Helpers ----------
@@ -136,15 +140,16 @@ function Remove-PathSafe {
     # Expand env vars, keep as literal
     $expanded = [Environment]::ExpandEnvironmentVariables($Path).Trim().TrimEnd('\')
     # Defense-in-depth: block only exact dangerous roots (not every subfolder).
-    $lower = $expanded.ToLowerInvariant()
+    # Quoted "$env:..." so missing variables (e.g. ProgramFiles(x86) on 32-bit) become "" instead of crashing.
+    $lower = "$expanded".ToLowerInvariant()
     $dangerous = @(
-        $env:SystemRoot.ToLowerInvariant(),
-        ($env:ProgramFiles).ToLowerInvariant(),
-        (${env:ProgramFiles(x86)}).ToLowerInvariant(),
-        ($env:ProgramData).ToLowerInvariant(),
-        ($env:USERPROFILE).ToLowerInvariant(),
-        ($env:APPDATA).ToLowerInvariant(),
-        ($env:LOCALAPPDATA).ToLowerInvariant()
+        "$env:SystemRoot".ToLowerInvariant(),
+        "$env:ProgramFiles".ToLowerInvariant(),
+        "${env:ProgramFiles(x86)}".ToLowerInvariant(),
+        "$env:ProgramData".ToLowerInvariant(),
+        "$env:USERPROFILE".ToLowerInvariant(),
+        "$env:APPDATA".ToLowerInvariant(),
+        "$env:LOCALAPPDATA".ToLowerInvariant()
     )
     foreach ($d in $dangerous) {
         if (-not [string]::IsNullOrWhiteSpace($d) -and $lower -eq $d) {
@@ -165,11 +170,12 @@ function Remove-PathSafe {
             return
         }
     }
-    if ($expanded.Length -lt 12) {
+    # Very short paths can only be drive roots (custom installs like E:\GameLoop are longer).
+    if ($expanded.Length -lt 6) {
         Write-Warning "  Refused to delete suspiciously short path: $expanded"
         return
     }
-    if (Test-Path -LiteralPath $expanded) {
+    if (Test-Path -LiteralPath $expanded -ErrorAction SilentlyContinue) {
         if ($PSCmdlet.ShouldProcess($expanded, "Remove-Item -Recurse -Force")) {
             try {
                 Remove-Item -LiteralPath $expanded -Recurse -Force -ErrorAction Stop
@@ -191,7 +197,7 @@ function Remove-RegKeySafe {
         Write-Warning "  Refused to delete shallow registry path: $Path"
         return
     }
-    if (Test-Path -LiteralPath $Path) {
+    if (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue) {
         if ($PSCmdlet.ShouldProcess($Path, "Remove registry key")) {
             try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; Write-Ok "removed leftover setting: $Path"; Add-Stat 'RegKeys' }
             catch { Write-Warning "  Could not remove reg $Path : $_" }
@@ -250,7 +256,7 @@ if (-not $Silent -and -not $WhatIfPreference) {
     Write-Host "    - When it is done, restarting your PC finishes the job." -ForegroundColor Gray
     Write-Host ""
     $ans = Read-Host "  Type YES in capital letters to start the cleanup"
-    if ($ans.Trim() -ne "YES") { Write-Host "  No problem - nothing was changed. Bye!"; try { Stop-Transcript | Out-Null } catch {}; exit 0 }
+    if ([string]::IsNullOrWhiteSpace($ans) -or $ans.Trim() -ne "YES") { Write-Host "  No problem - nothing was changed. Bye!"; try { Stop-Transcript | Out-Null } catch {}; exit 0 }
 }
 
 # Registry backup
@@ -289,7 +295,6 @@ if (-not $SkipOfficialUninstaller) {
         "$env:ProgramFiles\Tencent\GameLoop\Application\Uninstall.exe",
         "${env:ProgramFiles(x86)}\Tencent\GameLoop\Application\Uninstall.exe"
     )
-    $script:CustomInstallPaths = @()
     # b) Old path: TxGameAssistant GF*\TUninstall.exe on fixed drives only (depth-limited for speed)
     try {
         $drives = [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady } | Select-Object -ExpandProperty RootDirectory | Select-Object -ExpandProperty FullName
@@ -332,7 +337,7 @@ if (-not $SkipOfficialUninstaller) {
                         $isGameLoop = ($display -match 'GameLoop|MobileGamePC|Tencent Gaming|TxGameAssistant|TenStore') -or
                                       ($publisher -match 'Tencent|Hong Kong Gathering Media|GameLoop|TenStore' -and $display -match 'Game|Emulator|Assistant|Loop|Store')
                         if ($isGameLoop) {
-                            if ($uninstall) { Write-Found "installed program: $display" }
+                            if ($uninstall) { Write-Found "installed program: $display"; Write-Detail $uninstall }
                             if (-not [string]::IsNullOrWhiteSpace($installLoc) -and (Test-Path -LiteralPath $installLoc)) {
                                 $script:CustomInstallPaths += $installLoc
                                 Write-Found "its files live in: $installLoc"
@@ -435,8 +440,12 @@ foreach ($svc in @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv","
             if ($PSCmdlet.ShouldProcess($svc, "Stop-Service + sc delete")) {
                 try { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } catch {}
                 Start-Sleep -Seconds 1
-                & sc.exe delete $svc 2>$null | Out-Null
-                Write-Ok "removed background helper: $svc"; Add-Stat 'Services'
+                $scOut = (& sc.exe delete $svc 2>&1 | Out-String).Trim()
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Ok "removed background helper: $svc"; Add-Stat 'Services'
+                } else {
+                    Write-Warning "  $svc needs a restart to finish going away ($scOut)"
+                }
             }
         }
     } catch { Write-Warning "  Service $svc : $_" }
@@ -453,13 +462,14 @@ try {
     foreach ($pat in $patterns) {
         try { $rules += Get-NetFirewallRule -DisplayName $pat -ErrorAction SilentlyContinue } catch {}
     }
-    $rules = $rules | Sort-Object Name -Unique | Where-Object {
+    $rules = @($rules | Where-Object { $_ } | Sort-Object Name -Unique | Where-Object {
         $_.DisplayName -match 'GameLoop|TxGameAssistant|TenStore|QMEmulator|aow_exe|AndroidEmulator|GameLoopService|GLABox' -or
         $_.Name -match 'GameLoop|TxGameAssistant|TenStore|QMEmulator'
-    }
+    })
     foreach ($r in $rules) {
-        if ($PSCmdlet.ShouldProcess($r.DisplayName, "Remove-NetFirewallRule")) {
-            try { Remove-NetFirewallRule -Name $r.Name -ErrorAction Stop; Write-Ok "removed firewall permission: $($r.DisplayName)"; Add-Stat 'Firewall' }
+        $ruleLabel = if ([string]::IsNullOrWhiteSpace($r.DisplayName)) { $r.Name } else { $r.DisplayName }
+        if ($PSCmdlet.ShouldProcess($ruleLabel, "Remove-NetFirewallRule")) {
+            try { Remove-NetFirewallRule -Name $r.Name -ErrorAction Stop; Write-Ok "removed firewall permission: $ruleLabel"; Add-Stat 'Firewall' }
             catch { Write-Warning "  Firewall rule failed: $_" }
         }
     }
@@ -474,7 +484,7 @@ try {
     if ($tasks.Count -eq 0) {
         try { $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -match 'GameLoop|TxGameAssistant|TenStore|QMEmulator' } } catch {}
     }
-    $tasks = @($tasks | Sort-Object TaskPath, TaskName -Unique)
+    $tasks = @($tasks | Where-Object { $_ } | Sort-Object TaskPath, TaskName -Unique)
     foreach ($t in $tasks) {
         if ($PSCmdlet.ShouldProcess("$($t.TaskPath)$($t.TaskName)", "Unregister-ScheduledTask")) {
             try { Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Confirm:$false -ErrorAction Stop; Write-Ok "removed automatic task: $($t.TaskPath)$($t.TaskName)"; Add-Stat 'Tasks' }
@@ -504,7 +514,7 @@ foreach ($startupDir in @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\St
     try {
         if (Test-Path -LiteralPath $startupDir) {
             Get-ChildItem -LiteralPath $startupDir -Filter "*.lnk" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'GameLoop|TxGameAssistant|Tencent Gaming|TenStore|AndroidEmulator' } | ForEach-Object {
-                Remove-PathSafe $_.FullName
+                Remove-PathSafe $_.FullName -Stat 'Shortcuts'
             }
         }
     } catch {}
@@ -600,6 +610,11 @@ $folders = @(
     "$env:USERPROFILE\Documents\Tencent Files",
     "$env:LOCALAPPDATA\Temp\Tencent"
 )
+# Documents may live under OneDrive - cover the real location too
+$knownDocs = [Environment]::GetFolderPath('MyDocuments')
+if (-not [string]::IsNullOrWhiteSpace($knownDocs) -and ($knownDocs -ne "$env:USERPROFILE\Documents")) {
+    $folders += (Join-Path $knownDocs "Tencent Files")
+}
 # Custom install locations discovered from Uninstall registry (e.g. D:\Games\GameLoop)
 foreach ($custom in @($script:CustomInstallPaths)) {
     if (-not [string]::IsNullOrWhiteSpace($custom)) { $folders += $custom }
