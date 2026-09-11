@@ -220,7 +220,7 @@ if (-not $WhatIfPreference) {
 }
 
 Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
-Write-Host "  |  GAMELOOP UNINSTALLER                                  |" -ForegroundColor Green
+Write-Host "  |  GAMELOOP UNINSTALLER BY KingStan                    |" -ForegroundColor Green
 Write-Host "  |  Removes GameLoop completely, step by step             |" -ForegroundColor Gray
 Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
 Write-Host "      This tool closes GameLoop, removes its background" -ForegroundColor DarkGray
