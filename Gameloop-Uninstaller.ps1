@@ -87,6 +87,11 @@ function Write-Found {
     Write-Host "  [>] $Message" -ForegroundColor Gray
 }
 
+function Write-Detail {
+    param([string]$Message)
+    Write-Host "      $Message" -ForegroundColor DarkGray
+}
+
 function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     $p = New-Object Security.Principal.WindowsPrincipal($id)
@@ -111,12 +116,12 @@ function Stop-GameLoopProcess {
                         try { $exePath = (Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $pr.Id) -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExecutablePath) } catch {}
                     }
                     if ($exePath -notmatch 'GameLoop|TxGameAssistant|Tencent') {
-                        Write-Skip "shared process $($pr.ProcessName) ($($pr.Id)) outside GameLoop path"
+                        Write-Skip "$($pr.ProcessName) belongs to another program - left running"
                         continue
                     }
                 }
                 if ($PSCmdlet.ShouldProcess("$($pr.ProcessName) (PID $($pr.Id))", "Stop-Process")) {
-                    try { Stop-Process -Id $pr.Id -Force -ErrorAction Stop; Write-Ok "stopped $($pr.ProcessName) ($($pr.Id))"; Add-Stat 'Processes' }
+                    try { Stop-Process -Id $pr.Id -Force -ErrorAction Stop; Write-Ok "closed $($pr.ProcessName) ($($pr.Id))"; Add-Stat 'Processes' }
                     catch { Write-Warning "  Could not kill $($pr.ProcessName): $_" }
                 }
             }
@@ -188,7 +193,7 @@ function Remove-RegKeySafe {
     }
     if (Test-Path -LiteralPath $Path) {
         if ($PSCmdlet.ShouldProcess($Path, "Remove registry key")) {
-            try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; Write-Ok "removed reg: $Path"; Add-Stat 'RegKeys' }
+            try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; Write-Ok "removed leftover setting: $Path"; Add-Stat 'RegKeys' }
             catch { Write-Warning "  Could not remove reg $Path : $_" }
         }
     }
@@ -216,11 +221,19 @@ if (-not $WhatIfPreference) {
 
 Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
 Write-Host "  |  GAMELOOP UNINSTALLER                                  |" -ForegroundColor Green
-Write-Host "  |  Clean removal for GameLoop 7.x / TenStore (2025-2026) |" -ForegroundColor Gray
+Write-Host "  |  Removes GameLoop completely, step by step             |" -ForegroundColor Gray
 Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
+Write-Host "      This tool closes GameLoop, removes its background" -ForegroundColor DarkGray
+Write-Host "      helpers, settings and leftover files - and nothing" -ForegroundColor DarkGray
+Write-Host "      else. Your documents, photos and other apps are" -ForegroundColor DarkGray
+Write-Host "      never touched. Everything it does is written to" -ForegroundColor DarkGray
+Write-Host "      the log file below, so you can always see what" -ForegroundColor DarkGray
+Write-Host "      happened afterwards." -ForegroundColor DarkGray
+$gamesNote = if ($KeepGames) { 'ON (downloaded games are kept)' } else { 'OFF (everything GameLoop goes)' }
 Write-Host ("  Log      : {0}" -f $logFile) -ForegroundColor DarkGray
 Write-Host ("  Started  : {0:yyyy-MM-dd HH:mm:ss}" -f (Get-Date)) -ForegroundColor DarkGray
-Write-Host ("  Options  : Silent={0} KeepGames={1} SkipOfficial={2}" -f $Silent, $KeepGames, $SkipOfficialUninstaller) -ForegroundColor DarkGray
+Write-Host ("  Mode     : {0}" -f $(if ($Silent) { 'Automatic (no questions asked)' } else { 'Guided (asks before doing anything)' })) -ForegroundColor DarkGray
+Write-Host ("  KeepGames: {0}" -f $gamesNote) -ForegroundColor DarkGray
 $script:Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 if (-not (Test-IsAdmin) -and -not $WhatIfPreference) {
@@ -230,14 +243,20 @@ if (-not (Test-IsAdmin) -and -not $WhatIfPreference) {
 }
 
 if (-not $Silent -and -not $WhatIfPreference) {
-    Write-Warning "This will completely remove GameLoop / Tencent emulator files, services and registry keys."
-    Write-Warning "Close games and the emulator first. A reboot is recommended afterwards."
-    $ans = Read-Host "Type YES to continue"
-    if ($ans.Trim() -ne "YES") { Write-Host "Aborted by user."; try { Stop-Transcript | Out-Null } catch {}; exit 0 }
+    Write-Host ""
+    Write-Host "  Before we start:" -ForegroundColor White
+    Write-Host "    - Close any game running inside GameLoop." -ForegroundColor Gray
+    Write-Host "    - This only removes GameLoop and Tencent emulator leftovers." -ForegroundColor Gray
+    Write-Host "    - When it is done, restarting your PC finishes the job." -ForegroundColor Gray
+    Write-Host ""
+    $ans = Read-Host "  Type YES in capital letters to start the cleanup"
+    if ($ans.Trim() -ne "YES") { Write-Host "  No problem - nothing was changed. Bye!"; try { Stop-Transcript | Out-Null } catch {}; exit 0 }
 }
 
 # Registry backup
-Write-Step "Backing up Tencent/GameLoop registry keys"
+Write-Step "Safety backup first"
+Write-Detail "We save a copy of the GameLoop settings before touching"
+Write-Detail "anything, so nothing is lost forever."
 $backupDir = Join-Path $script:TempBase "GameLoop-RegBackup"
 if ($PSCmdlet.ShouldProcess($backupDir, "Create backup dir")) {
     try { New-Item -ItemType Directory -Path $backupDir -Force -ErrorAction Stop | Out-Null }
@@ -261,7 +280,9 @@ foreach ($key in @("HKCU\Software\Tencent", "HKLM\SOFTWARE\Tencent", "HKLM\SOFTW
 
 # ---------- 1. Official uninstallers first ----------
 if (-not $SkipOfficialUninstaller) {
-    Write-Step "Step 1/7 - Running official uninstallers (if present)"
+    Write-Step "Step 1/7 - Letting GameLoop uninstall itself"
+    Write-Detail "GameLoop's own uninstaller knows its files best, so we"
+    Write-Detail "let it go first. This is the gentlest, safest way."
 
     # a) New path: C:\Program Files\Tencent\GameLoop\Application\Uninstall.exe
     $official = @(
@@ -311,10 +332,10 @@ if (-not $SkipOfficialUninstaller) {
                         $isGameLoop = ($display -match 'GameLoop|MobileGamePC|Tencent Gaming|TxGameAssistant|TenStore') -or
                                       ($publisher -match 'Tencent|Hong Kong Gathering Media|GameLoop|TenStore' -and $display -match 'Game|Emulator|Assistant|Loop|Store')
                         if ($isGameLoop) {
-                            if ($uninstall) { Write-Found "found: $display -> $uninstall" }
+                            if ($uninstall) { Write-Found "installed program: $display" }
                             if (-not [string]::IsNullOrWhiteSpace($installLoc) -and (Test-Path -LiteralPath $installLoc)) {
                                 $script:CustomInstallPaths += $installLoc
-                                Write-Found "custom install location: $installLoc"
+                                Write-Found "its files live in: $installLoc"
                             }
                             # Prefer QuietUninstallString, strip quotes for exe lookup
                             $us = $quiet
@@ -333,7 +354,8 @@ if (-not $SkipOfficialUninstaller) {
     foreach ($exe in $official) {
         $exeExp = [Environment]::ExpandEnvironmentVariables($exe)
         if (Test-Path -LiteralPath $exeExp) {
-            Write-Found "running official uninstaller: $exeExp"
+            Write-Found "running GameLoop's own uninstaller - if it opens a window, please follow it:"
+            Write-Detail $exeExp
             if ($PSCmdlet.ShouldProcess($exeExp, "Run official uninstaller")) {
                 # Per-exe silent flags (GameLoop uses mixed installers: custom /uninstall, Inno /VERYSILENT, NSIS /S)
                 $flags = @("/uninstall", "/quiet")
@@ -346,12 +368,12 @@ if (-not $SkipOfficialUninstaller) {
                         Write-Warning "  Uninstaller timed out after 180s, killing PID $($proc.Id)"
                         try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
                     } else {
-                        Write-Found "exit code: $($proc.ExitCode)"
+                        Write-Found "its uninstaller finished (result code $($proc.ExitCode))"
                     }
                 } catch {
-                    Write-Warning "  Silent uninstall failed: $_"
+                    Write-Warning "  Quiet mode did not work for this uninstaller: $_"
                     if (-not $Silent) {
-                        Write-Host "  Trying interactive uninstaller (user input may be required)..."
+                        Write-Host "  Opening it normally instead - just click through its window..."
                         try {
                             $proc2 = Start-Process -FilePath $exeExp -PassThru -ErrorAction Stop
                             $proc2.WaitForExit(300000) | Out-Null
@@ -363,11 +385,13 @@ if (-not $SkipOfficialUninstaller) {
     }
     if (-not $WhatIfPreference) { Start-Sleep -Seconds 3 }
 } else {
-    Write-Step "Step 1/7 - Skipped official uninstaller (-SkipOfficialUninstaller)"
+    Write-Step "Step 1/7 - Skipped (you chose -SkipOfficialUninstaller)"
 }
 
 # ---------- 2. Kill GameLoop processes only ----------
-Write-Step "Step 2/7 - Stopping GameLoop processes"
+Write-Step "Step 2/7 - Closing GameLoop apps still running"
+Write-Detail "Some GameLoop parts keep running quietly in the background."
+Write-Detail "We close only those - your other programs stay open."
 $killList = @(
     # New GameLoop 7.x
     "GameLoop.exe","GameLoopEmulator.exe","GameLoopService.exe","GameLoopAssistant.exe",
@@ -394,23 +418,25 @@ $stragglers = @("GameLoopEmulator.exe","aow_exe.exe","QMEmulatorService.exe","An
 for ($i = 1; $i -le 3; $i++) {
     $remaining = @(Get-Process -Name ($stragglers -replace '\.exe$','') -ErrorAction SilentlyContinue)
     if ($remaining.Count -eq 0) { break }
-    Write-Found "retry pass $i for $($remaining.Count) straggler(s)..."
+    Write-Found "looking once more for stragglers (pass $i of 3)..."
     Stop-GameLoopProcess -Names $stragglers
     if ($i -lt 3 -and -not $WhatIfPreference) { Start-Sleep -Seconds 2 }
 }
 
 # ---------- 3. Stop + delete services ----------
-Write-Step "Step 3/7 - Stopping and removing GameLoop services"
+Write-Step "Step 3/7 - Removing GameLoop background helpers"
+Write-Detail "GameLoop installs hidden helpers that start with Windows."
+Write-Detail "We remove the GameLoop ones only."
 foreach ($svc in @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv","Tensafe")) {
     try {
         $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
         if ($s) {
-            Write-Found "service: $svc ($($s.Status))"
+            Write-Found "found background helper: $svc ($($s.Status))"
             if ($PSCmdlet.ShouldProcess($svc, "Stop-Service + sc delete")) {
                 try { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } catch {}
                 Start-Sleep -Seconds 1
                 & sc.exe delete $svc 2>$null | Out-Null
-                Write-Ok "deleted service: $svc"; Add-Stat 'Services'
+                Write-Ok "removed background helper: $svc"; Add-Stat 'Services'
             }
         }
     } catch { Write-Warning "  Service $svc : $_" }
@@ -418,7 +444,9 @@ foreach ($svc in @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv","
 
 # ---------- 4. Firewall rules + scheduled tasks + startup ----------
 # NOTE: intentionally NOT matching bare 'Tencent' - would nuke QQ/WeChat rules.
-Write-Step "Step 4/7 - Removing firewall rules, scheduled tasks and startup entries"
+Write-Step "Step 4/7 - Tidying permissions and auto-start"
+Write-Detail "Leftover entries that let GameLoop through the firewall,"
+Write-Detail "wake it on a schedule, or start it with Windows."
 try {
     $patterns = @('*GameLoop*', '*TxGameAssistant*', '*TenStore*', '*QMEmulator*', '*aow_exe*', '*AndroidEmulator*', '*GLABox*')
     $rules = @()
@@ -431,11 +459,11 @@ try {
     }
     foreach ($r in $rules) {
         if ($PSCmdlet.ShouldProcess($r.DisplayName, "Remove-NetFirewallRule")) {
-            try { Remove-NetFirewallRule -Name $r.Name -ErrorAction Stop; Write-Ok "removed firewall rule: $($r.DisplayName)"; Add-Stat 'Firewall' }
+            try { Remove-NetFirewallRule -Name $r.Name -ErrorAction Stop; Write-Ok "removed firewall permission: $($r.DisplayName)"; Add-Stat 'Firewall' }
             catch { Write-Warning "  Firewall rule failed: $_" }
         }
     }
-    if (@($rules).Count -eq 0) { Write-Skip "no GameLoop firewall rules found" }
+    if (@($rules).Count -eq 0) { Write-Skip "nothing to do - no GameLoop firewall permissions" }
 } catch { Write-Warning "  Firewall cleanup: $_" }
 
 try {
@@ -449,11 +477,11 @@ try {
     $tasks = @($tasks | Sort-Object TaskPath, TaskName -Unique)
     foreach ($t in $tasks) {
         if ($PSCmdlet.ShouldProcess("$($t.TaskPath)$($t.TaskName)", "Unregister-ScheduledTask")) {
-            try { Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Confirm:$false -ErrorAction Stop; Write-Ok "removed task: $($t.TaskPath)$($t.TaskName)"; Add-Stat 'Tasks' }
+            try { Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Confirm:$false -ErrorAction Stop; Write-Ok "removed automatic task: $($t.TaskPath)$($t.TaskName)"; Add-Stat 'Tasks' }
             catch { Write-Warning "  Task failed: $_" }
         }
     }
-    if (@($tasks).Count -eq 0) { Write-Skip "no GameLoop scheduled tasks found" }
+    if (@($tasks).Count -eq 0) { Write-Skip "nothing to do - no GameLoop automatic tasks" }
 } catch { Write-Warning "  Task cleanup: $_" }
 
 # Startup entries (Run keys + Startup folders) - GameLoop only, never whole keys
@@ -464,7 +492,7 @@ foreach ($runKey in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Run", "HK
             foreach ($prop in $props) {
                 if ("$($prop.Value)" -match 'GameLoop|TxGameAssistant|TenStore|QMEmulator|AndroidEmulator|aow_exe') {
                     if ($PSCmdlet.ShouldProcess("$runKey\$($prop.Name)", "Remove Run value")) {
-                        try { Remove-ItemProperty -LiteralPath $runKey -Name $prop.Name -Force -ErrorAction Stop; Write-Ok "removed Run value: $($prop.Name)"; Add-Stat 'Startup' }
+                        try { Remove-ItemProperty -LiteralPath $runKey -Name $prop.Name -Force -ErrorAction Stop; Write-Ok "removed auto-start entry: $($prop.Name)"; Add-Stat 'Startup' }
                         catch { Write-Warning "  Run value failed: $_" }
                     }
                 }
@@ -483,7 +511,9 @@ foreach ($startupDir in @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\St
 }
 
 # ---------- 5. Registry ----------
-Write-Step "Step 5/7 - Removing GameLoop registry keys (targeted only)"
+Write-Step "Step 5/7 - Removing leftover GameLoop settings"
+Write-Detail "Small notes Windows keeps about GameLoop. Only GameLoop"
+Write-Detail "entries are removed - everything else stays as it is."
 # Ensure HKCR: drive exists for HKCR\GameLoop
 try { if (-not (Get-PSDrive -Name HKCR -ErrorAction SilentlyContinue)) { New-PSDrive -Name HKCR -PSProvider Registry -Root HKEY_CLASSES_ROOT -ErrorAction SilentlyContinue | Out-Null } } catch {}
 
@@ -511,8 +541,8 @@ foreach ($parent in @("HKCU:\Software\Tencent", "HKLM:\SOFTWARE\Tencent", "HKLM:
         if ((Test-Path -LiteralPath $parent) -and $PSCmdlet.ShouldProcess($parent, "Remove parent Tencent key if empty")) {
             $kids = @(Get-ChildItem -LiteralPath $parent -ErrorAction SilentlyContinue)
             $vals = @((Get-ItemProperty -LiteralPath $parent -ErrorAction SilentlyContinue).PSObject.Properties | Where-Object { $_.Name -notmatch '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$' })
-            if ($kids.Count -eq 0 -and $vals.Count -eq 0) { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue; Write-Ok "removed empty parent: $parent"; Add-Stat 'RegKeys' }
-            else { Write-Skip "kept parent $parent ($($kids.Count) subkey(s), $($vals.Count) value(s) - other Tencent apps?)" }
+            if ($kids.Count -eq 0 -and $vals.Count -eq 0) { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue; Write-Ok "removed empty settings group: $parent"; Add-Stat 'RegKeys' }
+            else { Write-Skip "kept $parent - still used by your other Tencent apps" }
         }
     } catch {}
 }
@@ -538,7 +568,7 @@ foreach ($muiKey in @("HKCU:\Software\Classes\Local Settings\Software\Microsoft\
             foreach ($prop in $muiProps) {
                 if ($prop.Name -match 'GameLoop|TxGameAssistant|TenStore|MobileGamePC|AndroidEmulator|AppMarket') {
                     if ($PSCmdlet.ShouldProcess("$muiKey\$($prop.Name)", "Remove MuiCache value")) {
-                        try { Remove-ItemProperty -LiteralPath $muiKey -Name $prop.Name -Force -ErrorAction Stop; Write-Ok "removed MuiCache: $($prop.Name)"; Add-Stat 'RegValues' }
+                        try { Remove-ItemProperty -LiteralPath $muiKey -Name $prop.Name -Force -ErrorAction Stop; Write-Ok "removed remembered app entry: $($prop.Name)"; Add-Stat 'RegValues' }
                         catch { Write-Warning "  MuiCache failed: $_" }
                     }
                 }
@@ -550,7 +580,9 @@ foreach ($muiKey in @("HKCU:\Software\Classes\Local Settings\Software\Microsoft\
 # NOTE: intentionally NOT deleting Compatibility Assistant\Store wholesale (too broad).
 
 # ---------- 6. Folders, shortcuts, temp ----------
-Write-Step "Step 6/7 - Removing GameLoop folders and shortcuts"
+Write-Step "Step 6/7 - Removing leftover files and icons"
+Write-Detail "Leftover program folders, desktop icons and Start menu"
+Write-Detail "entries. Your personal files are never touched."
 
 # Narrowed to GameLoop subfolders only - never whole ...\Tencent (would wipe QQ/WeChat).
 $folders = @(
@@ -590,7 +622,7 @@ $folders = $folders | Select-Object -Unique
 foreach ($f in $folders) {
     # Respect -KeepGames for Documents\Tencent Files
     if ($KeepGames -and $f -like "*Documents\Tencent Files*") {
-        Write-Skip "KeepGames, skipped: $f"
+        Write-Skip "kept your games folder (you chose -KeepGames): $f"
         continue
     }
     # Never delete a drive root or bare Temp
@@ -607,7 +639,7 @@ foreach ($tencentParent in @("$env:ProgramFiles\Tencent", "${env:ProgramFiles(x8
         if ((Test-Path -LiteralPath $tencentParent) -and $PSCmdlet.ShouldProcess($tencentParent, "Remove empty parent Tencent folder")) {
             if (@(Get-ChildItem -LiteralPath $tencentParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
                 Remove-Item -LiteralPath $tencentParent -Force -ErrorAction SilentlyContinue
-                Write-Ok "removed empty parent: $tencentParent"; Add-Stat 'Folders'
+                Write-Ok "removed empty leftover folder: $tencentParent"; Add-Stat 'Folders'
             }
         }
     } catch {}
@@ -637,7 +669,8 @@ foreach ($startDir in @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\TxGa
 foreach ($s in $shortcuts) { Remove-PathSafe $s -Stat 'Shortcuts' }
 
 # GameLoop-only temp (never whole %TEMP%)
-Write-Step "Cleaning GameLoop-only temp files"
+Write-Step "Cleaning temporary files"
+Write-Detail "Temporary download and setup files GameLoop left behind."
 $sysTemp = Join-Path $env:SystemRoot "Temp"
 foreach ($t in @( "$script:TempBase\Tencent", "$script:TempBase\GameLoop", "$script:TempBase\TBSdk", "$script:TempBase\TxGameAssistant", "$env:LOCALAPPDATA\Temp\Tencent", (Join-Path $sysTemp "Tencent"), (Join-Path $sysTemp "GameLoop") )) {
     Remove-PathSafe $t -Stat 'Temp'
@@ -652,7 +685,8 @@ try {
 } catch {}
 
 # ---------- 7. Verify ----------
-Write-Step "Step 7/7 - Verify"
+Write-Step "Step 7/7 - Double-checking everything is gone"
+Write-Detail "We look again at the main GameLoop spots to confirm."
 if ($WhatIfPreference) {
     Write-Host "WhatIf mode: verification skipped (no files were actually deleted)."
 } else {
@@ -671,40 +705,47 @@ if ($WhatIfPreference) {
     $leftoverSvcs = @(Get-Service -Name @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv") -ErrorAction SilentlyContinue)
     $leftoverProcs = @(Get-Process -Name @("GameLoop","GameLoopEmulator","aow_exe","QMEmulatorService","AndroidEmulatorEn") -ErrorAction SilentlyContinue)
     if ($leftover.Count -eq 0 -and $leftoverSvcs.Count -eq 0 -and $leftoverProcs.Count -eq 0) {
-        Write-Ok "cleanup looks complete - no GameLoop folders, services or processes remain"
+        Write-Ok "all clean - no GameLoop leftovers found anywhere"
     } else {
-        if ($leftover.Count -gt 0) { Write-Warning ("Remaining folders (may need reboot to unlock driver aow_drv): " + ($leftover -join ", ")) }
-        if ($leftoverSvcs.Count -gt 0) { Write-Warning ("Remaining services: " + (($leftoverSvcs | Select-Object -ExpandProperty Name) -join ", ")) }
-        if ($leftoverProcs.Count -gt 0) { Write-Warning ("Remaining processes: " + (($leftoverProcs | Select-Object -ExpandProperty ProcessName -Unique) -join ", ")) }
+        Write-Host "  Almost there - a few things need attention:" -ForegroundColor Yellow
+        if ($leftover.Count -gt 0) { Write-Warning ("  Folders still there (a restart usually unlocks them): " + ($leftover -join ", ")) }
+        if ($leftoverSvcs.Count -gt 0) { Write-Warning ("  Helpers still installed: " + (($leftoverSvcs | Select-Object -ExpandProperty Name) -join ", ")) }
+        if ($leftoverProcs.Count -gt 0) { Write-Warning ("  Apps still running (close them, then run this again): " + (($leftoverProcs | Select-Object -ExpandProperty ProcessName -Unique) -join ", ")) }
     }
 }
 
 $script:Stopwatch.Stop()
 $labels = [ordered]@{
-    Processes = 'Processes stopped'; Services = 'Services removed'
-    Firewall = 'Firewall rules'; Tasks = 'Scheduled tasks'; Startup = 'Startup entries'
-    RegKeys = 'Registry keys'; RegValues = 'Registry values'
-    Folders = 'Folders'; Shortcuts = 'Shortcuts'; Temp = 'Temp items'
+    Processes = 'Apps closed'; Services = 'Background helpers'
+    Firewall = 'Firewall permissions'; Tasks = 'Automatic tasks'; Startup = 'Auto-start entries'
+    RegKeys = 'Settings groups'; RegValues = 'Settings entries'
+    Folders = 'Folders'; Shortcuts = 'Icons & shortcuts'; Temp = 'Temp files'
 }
 $total = 0
 foreach ($v in $script:Stats.Values) { $total += $v }
 Write-Host ""
 Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
-Write-Host "  |  SUMMARY                                             |" -ForegroundColor Green
+Write-Host "  |  ALL DONE - HERE IS WHAT WAS CLEANED                 |" -ForegroundColor Green
 Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
 foreach ($k in $script:Stats.Keys) {
-    Write-Host ("    {0,-18} {1,5}" -f $labels[$k], $script:Stats[$k]) -ForegroundColor Gray
+    Write-Host ("    {0,-20} {1,5}" -f $labels[$k], $script:Stats[$k]) -ForegroundColor Gray
 }
-Write-Host ("    {0,-18} {1,5}" -f 'TOTAL', $total) -ForegroundColor White
-Write-Host ("    {0,-18} {1,5}" -f 'Elapsed', $script:Stopwatch.Elapsed.ToString('mm\:ss')) -ForegroundColor Gray
+Write-Host ("    {0,-20} {1,5}" -f 'TOTAL', $total) -ForegroundColor White
+Write-Host ("    {0,-20} {1,5}" -f 'Time taken', $script:Stopwatch.Elapsed.ToString('mm\:ss')) -ForegroundColor Gray
 Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
 Write-Host ""
-Write-Ok "done - log saved to: $logFile"
-Write-Found "registry backup in: $backupDir"
+Write-Host "  What is next:" -ForegroundColor White
+Write-Host "    1. Restart your PC to finish (unlocks any files still in use)." -ForegroundColor Gray
+Write-Host "    2. Want GameLoop back? Get it fresh from the official site." -ForegroundColor Gray
+Write-Host "    3. This full report is saved in the log file below." -ForegroundColor Gray
+Write-Host ""
+Write-Ok "done - full report saved to: $logFile"
+Write-Found "settings backup kept in: $backupDir"
 try { Stop-Transcript | Out-Null } catch {}
 
 if (-not $NoRebootPrompt -and -not $Silent -and -not $WhatIfPreference) {
-    $rb = Read-Host "Reboot now to release locked drivers (aow_drv)? (Y/N)"
+    Write-Host ""
+    $rb = Read-Host "  Restart your PC now to finish the cleanup? (Y/N)"
     if ($rb -match '^[Yy]') { Restart-Computer -Force }
 }
 

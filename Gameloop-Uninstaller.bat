@@ -27,7 +27,9 @@ if not exist "%SCRIPT%" (
 net session >nul 2>&1
 if not "%errorLevel%"=="0" (
     echo Requesting administrator rights...
-    echo A new elevated window will open to continue the uninstall.
+    echo A new window will open to continue. If Windows asks
+    echo for permission, please click Yes - the cleanup needs
+    echo it to remove system files properly.
     :: Escape single quotes for PowerShell single-quoted strings (e.g. O'Brien -> O''Brien)
     set "SELF=%~f0"
     set "SELF=%SELF:'=''%"
@@ -42,8 +44,11 @@ if not "%errorLevel%"=="0" (
 )
 
 echo ======================================================
-echo  GAMELOOP UNINSTALLER - one-click launcher
+echo  GAMELOOP UNINSTALLER - one-click cleanup
 echo ======================================================
+echo Sit back - GameLoop is being removed step by step.
+echo A full report is saved next to this file when done.
+echo ------------------------------------------------------
 echo Script: "%SCRIPT%"
 echo Args  : %*
 echo Log   : %~dp0Gameloop-Uninstaller-*.log
