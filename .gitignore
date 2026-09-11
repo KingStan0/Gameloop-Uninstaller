@@ -1,0 +1,5 @@
+# GameLoop uninstall run artifacts - contain username / machine details
+GameLoop-Uninstall-*.log
+.writetest-*.tmp
+GameLoop-RegBackup/
+*.reg
