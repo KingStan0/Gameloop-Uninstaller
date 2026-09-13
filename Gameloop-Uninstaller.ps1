@@ -287,7 +287,8 @@ foreach ($key in @("HKCU\Software\Tencent", "HKLM\SOFTWARE\Tencent", "HKLM\SOFTW
                 continue
             }
             $null = & reg.exe export $key $out /y 2>$null
-            if (Test-Path $out) { Write-Ok "backed up $key -> $out" }
+            if (Test-Path -LiteralPath $out -ErrorAction SilentlyContinue) { Write-Ok "backed up $key -> $out" }
+            else { Write-Warning "  Backup did not work for $key - continuing anyway" }
         }
     } catch {}
 }
@@ -624,7 +625,7 @@ try {
     Get-ChildItem "HKU:\" -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^S-1-5-21-' } | ForEach-Object {
         foreach ($sub in @("Software\Tencent\GameLoop", "Software\Tencent\MobileGamePC", "Software\Tencent\TGB")) {
             $full = "HKU:\$($_.PSChildName)\$sub"
-            if (Test-Path -LiteralPath $full) {
+            if (Test-Path -LiteralPath $full -ErrorAction SilentlyContinue) {
                 Remove-RegKeySafe $full
             }
         }
@@ -638,7 +639,7 @@ foreach ($muiKey in @("HKCU:\Software\Classes\Local Settings\Software\Microsoft\
         if (Test-Path -LiteralPath $muiKey) {
             $muiProps = (Get-ItemProperty -LiteralPath $muiKey -ErrorAction SilentlyContinue).PSObject.Properties | Where-Object { $_.Name -notmatch '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$' }
             foreach ($prop in $muiProps) {
-                if ($prop.Name -match 'GameLoop|TxGameAssistant|TenStore|MobileGamePC|AndroidEmulator|AppMarket') {
+                if ($prop.Name -match 'GameLoop|TxGameAssistant|TenStore|MobileGamePC|AndroidEmulator|AppMarket|TGB') {
                     if ($PSCmdlet.ShouldProcess("$muiKey\$($prop.Name)", "Remove MuiCache value")) {
                         try { Remove-ItemProperty -LiteralPath $muiKey -Name $prop.Name -Force -ErrorAction Stop; Write-Ok "removed remembered app entry: $($prop.Name)"; Add-Stat 'RegValues' }
                         catch { Write-Warning "  MuiCache failed: $_" }
@@ -783,7 +784,7 @@ if ($WhatIfPreference) {
     foreach ($p in ($verifyTargets | Select-Object -Unique)) {
         if (Test-Path -LiteralPath ([Environment]::ExpandEnvironmentVariables($p))) { $leftover += $p }
     }
-    $leftoverSvcs = @(Get-Service -Name @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv") -ErrorAction SilentlyContinue)
+    $leftoverSvcs = @(Get-Service -Name @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv","Tensafe") -ErrorAction SilentlyContinue)
     $leftoverProcs = @(Get-Process -Name @("GameLoop","GameLoopEmulator","aow_exe","QMEmulatorService","AndroidEmulatorEn") -ErrorAction SilentlyContinue)
     # Registry re-check: the main GameLoop keys should be gone too.
     $leftoverReg = @(
