@@ -32,6 +32,7 @@
     .\Gameloop-Uninstaller.ps1 -Silent -KeepGames
     .\Gameloop-Uninstaller.ps1 -WhatIf
 #>
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Interactive CLI uninstaller: colored host output IS the user interface and is captured to the transcript log')]
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [switch]$Silent,
@@ -118,9 +119,9 @@ function Stop-GameLoopProcess {
             foreach ($pr in $procs) {
                 if ($pathScoped -contains $pr.ProcessName) {
                     $exePath = ''
-                    try { $exePath = $pr.Path } catch {}
+                    try { $exePath = $pr.Path } catch { Write-Verbose "Best-effort step skipped: $_" }
                     if ([string]::IsNullOrWhiteSpace($exePath)) {
-                        try { $exePath = (Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $pr.Id) -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExecutablePath) } catch {}
+                        try { $exePath = (Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $pr.Id) -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExecutablePath) } catch { Write-Verbose "Best-effort step skipped: $_" }
                     }
                     if ($exePath -notmatch 'GameLoop|TxGameAssistant|Tencent') {
                         Write-Skip "$($pr.ProcessName) belongs to another program - left running"
@@ -230,7 +231,7 @@ if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
 }
 $logFile = Join-Path $script:LogDir ("Gameloop-Uninstaller-{0:yyyyMMdd-HHmmss}.log" -f (Get-Date))
 if (-not $WhatIfPreference) {
-    try { Start-Transcript -Path $logFile -Append -ErrorAction SilentlyContinue | Out-Null } catch {}
+    try { Start-Transcript -Path $logFile -Append -ErrorAction SilentlyContinue | Out-Null } catch { Write-Verbose "Best-effort step skipped: $_" }
 }
 
 Write-Host "  +------------------------------------------------------+" -ForegroundColor Green
@@ -252,7 +253,7 @@ $script:Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 if (-not (Test-IsAdmin) -and -not $WhatIfPreference) {
     Write-Error "Please run as Administrator (right-click Gameloop-Uninstaller.bat -> Run as administrator). Aborting."
-    try { Stop-Transcript | Out-Null } catch {}
+    try { Stop-Transcript | Out-Null } catch { Write-Verbose "Best-effort step skipped: $_" }
     exit 1
 }
 
@@ -264,7 +265,7 @@ if (-not $Silent -and -not $WhatIfPreference) {
     Write-Host "    - When it is done, restarting your PC finishes the job." -ForegroundColor Gray
     Write-Host ""
     $ans = Read-Host "  Type YES in capital letters to start the cleanup"
-    if ([string]::IsNullOrWhiteSpace($ans) -or $ans.Trim() -ne "YES") { Write-Host "  No problem - nothing was changed. Bye!"; try { Stop-Transcript | Out-Null } catch {}; exit 0 }
+    if ([string]::IsNullOrWhiteSpace($ans) -or $ans.Trim() -ne "YES") { Write-Host "  No problem - nothing was changed. Bye!"; try { Stop-Transcript | Out-Null } catch { Write-Verbose "Best-effort step skipped: $_" }; exit 0 }
 }
 
 # Registry backup
@@ -290,7 +291,7 @@ foreach ($key in @("HKCU\Software\Tencent", "HKLM\SOFTWARE\Tencent", "HKLM\SOFTW
             if (Test-Path -LiteralPath $out -ErrorAction SilentlyContinue) { Write-Ok "backed up $key -> $out" }
             else { Write-Warning "  Backup did not work for $key - continuing anyway" }
         }
-    } catch {}
+    } catch { Write-Verbose "Best-effort step skipped: $_" }
 }
 
 # ---------- 1. Official uninstallers first ----------
@@ -318,7 +319,7 @@ if (-not $SkipOfficialUninstaller) {
                 try {
                     Get-ChildItem -LiteralPath $cand -Filter "TUninstall.exe" -Depth 3 -ErrorAction SilentlyContinue |
                         Select-Object -ExpandProperty FullName | ForEach-Object { $official += $_ }
-                } catch {}
+                } catch { Write-Verbose "Best-effort step skipped: $_" }
             }
         }
     }
@@ -359,9 +360,9 @@ if (-not $SkipOfficialUninstaller) {
                             elseif ($us -match "'([^']+\.exe)'") { $official += $Matches[1] }
                             elseif ($us -match '([A-Z]:\\[^\s]+\.exe)') { $official += $Matches[1].Trim('"',"'",',',';') }
                         }
-                    } catch {}
+                    } catch { Write-Verbose "Best-effort step skipped: $_" }
                 }
-            } catch {}
+            } catch { Write-Verbose "Best-effort step skipped: $_" }
         }
     }
 
@@ -389,7 +390,7 @@ if (-not $SkipOfficialUninstaller) {
                         } catch { $stillThere = $false }
                         if ($stillThere) {
                             Write-Warning "  Uninstaller timed out after 180s, stopping it (PID $($proc.Id))"
-                            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+                            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { Write-Verbose "Best-effort step skipped: $_" }
                         } else {
                             Write-Found "uninstaller already gone - moving on"
                         }
@@ -402,7 +403,7 @@ if (-not $SkipOfficialUninstaller) {
                         Write-Found "opening it normally instead - just click through its window..."
                         try {
                             $proc2 = Start-Process -FilePath $exeExp -PassThru -ErrorAction Stop
-                            try { $proc2.WaitForExit(300000) | Out-Null } catch {}
+                            try { $proc2.WaitForExit(300000) | Out-Null } catch { Write-Verbose "Best-effort step skipped: $_" }
                         } catch { Write-Warning "  Failed: $_" }
                     }
                 }
@@ -496,7 +497,7 @@ foreach ($svc in $svcNames) {
         if ($s) {
             Write-Found "found background helper: $svc ($($s.Status))"
             if ($PSCmdlet.ShouldProcess($svc, "Stop-Service + sc delete")) {
-                try { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } catch {}
+                try { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } catch { Write-Verbose "Best-effort step skipped: $_" }
                 Start-Sleep -Seconds 1
                 $scOut = (& sc.exe delete $svc 2>&1 | Out-String).Trim()
                 if ($LASTEXITCODE -eq 0) {
@@ -518,7 +519,7 @@ try {
     $patterns = @('*GameLoop*', '*TxGameAssistant*', '*TenStore*', '*QMEmulator*', '*aow_exe*', '*AndroidEmulator*', '*GLABox*')
     $rules = @()
     foreach ($pat in $patterns) {
-        try { $rules += Get-NetFirewallRule -DisplayName $pat -ErrorAction SilentlyContinue } catch {}
+        try { $rules += Get-NetFirewallRule -DisplayName $pat -ErrorAction SilentlyContinue } catch { Write-Verbose "Best-effort step skipped: $_" }
     }
     $rules = @($rules | Where-Object { $_ } | Sort-Object Name -Unique | Where-Object {
         $_.DisplayName -match 'GameLoop|TxGameAssistant|TenStore|QMEmulator|aow_exe|AndroidEmulator|GameLoopService|GLABox' -or
@@ -537,10 +538,10 @@ try {
 try {
     $tasks = @()
     foreach ($pat in @('*GameLoop*', '*TxGameAssistant*', '*TenStore*', '*QMEmulator*')) {
-        try { $tasks += Get-ScheduledTask -TaskName $pat -ErrorAction SilentlyContinue } catch {}
+        try { $tasks += Get-ScheduledTask -TaskName $pat -ErrorAction SilentlyContinue } catch { Write-Verbose "Best-effort step skipped: $_" }
     }
     if ($tasks.Count -eq 0) {
-        try { $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -match 'GameLoop|TxGameAssistant|TenStore|QMEmulator' } } catch {}
+        try { $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -match 'GameLoop|TxGameAssistant|TenStore|QMEmulator' } } catch { Write-Verbose "Best-effort step skipped: $_" }
     }
     $tasks = @($tasks | Where-Object { $_ } | Sort-Object TaskPath, TaskName -Unique)
     foreach ($t in $tasks) {
@@ -566,7 +567,7 @@ foreach ($runKey in @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Run", "HK
                 }
             }
         }
-    } catch {}
+    } catch { Write-Verbose "Best-effort step skipped: $_" }
 }
 foreach ($startupDir in @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp")) {
     try {
@@ -575,7 +576,7 @@ foreach ($startupDir in @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\St
                 Remove-PathSafe $_.FullName -Stat 'Shortcuts'
             }
         }
-    } catch {}
+    } catch { Write-Verbose "Best-effort step skipped: $_" }
 }
 
 # ---------- 5. Registry ----------
@@ -583,7 +584,7 @@ Write-Step "Step 5/7 - Removing leftover GameLoop settings"
 Write-Detail "Small notes Windows keeps about GameLoop. Only GameLoop"
 Write-Detail "entries are removed - everything else stays as it is."
 # Ensure HKCR: drive exists for HKCR\GameLoop
-try { if (-not (Get-PSDrive -Name HKCR -ErrorAction SilentlyContinue)) { New-PSDrive -Name HKCR -PSProvider Registry -Root HKEY_CLASSES_ROOT -ErrorAction SilentlyContinue | Out-Null } } catch {}
+try { if (-not (Get-PSDrive -Name HKCR -ErrorAction SilentlyContinue)) { New-PSDrive -Name HKCR -PSProvider Registry -Root HKEY_CLASSES_ROOT -ErrorAction SilentlyContinue | Out-Null } } catch { Write-Verbose "Best-effort step skipped: $_" }
 
 Remove-RegKeySafe "HKCU:\Software\Tencent\GameLoop"
 Remove-RegKeySafe "HKCU:\Software\Tencent\MobileGamePC"
@@ -616,7 +617,7 @@ foreach ($parent in @("HKCU:\Software\Tencent", "HKLM:\SOFTWARE\Tencent", "HKLM:
             if ($kids.Count -eq 0 -and $vals.Count -eq 0) { Remove-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue; Write-Ok "removed empty settings group: $parent"; Add-Stat 'RegKeys' }
             else { Write-Skip "kept $parent - still used by your other Tencent apps" }
         }
-    } catch {}
+    } catch { Write-Verbose "Best-effort step skipped: $_" }
 }
 
 # Per-user hives (dynamic SID, no hardcoded SID): remove GameLoop keys for real users only
@@ -647,7 +648,7 @@ foreach ($muiKey in @("HKCU:\Software\Classes\Local Settings\Software\Microsoft\
                 }
             }
         }
-    } catch {}
+    } catch { Write-Verbose "Best-effort step skipped: $_" }
 }
 
 # NOTE: intentionally NOT deleting Compatibility Assistant\Store wholesale (too broad).
@@ -724,7 +725,7 @@ foreach ($tencentParent in @("$env:ProgramFiles\Tencent", "${env:ProgramFiles(x8
                 Write-Ok "removed empty leftover folder: $tencentParent"; Add-Stat 'Folders'
             }
         }
-    } catch {}
+    } catch { Write-Verbose "Best-effort step skipped: $_" }
 }
 
 # Shortcuts (fixed quoting bug from old bat) - includes OneDrive-redirected Desktop
@@ -762,9 +763,9 @@ foreach ($t in @( "$script:TempBase\Tencent", "$script:TempBase\GameLoop", "$scr
 try {
     Get-ChildItem -LiteralPath $script:LogDir -Filter "Gameloop-Uninstaller-*.log" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -Skip 10 | ForEach-Object {
-            try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } catch {}
+            try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } catch { Write-Verbose "Best-effort step skipped: $_" }
         }
-} catch {}
+} catch { Write-Verbose "Best-effort step skipped: $_" }
 
 # ---------- 7. Verify ----------
 Write-Step "Step 7/7 - Double-checking everything is gone"
@@ -840,7 +841,8 @@ Write-Host "    3. This full report is saved in the log file below." -Foreground
 Write-Host ""
 Write-Ok "done - full report saved to: $logFile"
 Write-Found "settings backup kept in: $backupDir"
-try { Stop-Transcript | Out-Null } catch {}
+# Transcript only runs on real runs - never started under -WhatIf.
+if (-not $WhatIfPreference) { try { Stop-Transcript | Out-Null } catch { Write-Verbose "Best-effort step skipped: $_" } }
 
 if (-not $NoRebootPrompt -and -not $Silent -and -not $WhatIfPreference) {
     Write-Host ""
