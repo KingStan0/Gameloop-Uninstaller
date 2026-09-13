@@ -33,6 +33,10 @@ Example:
 
     Gameloop-Uninstaller.bat -Silent -KeepGames
 
+Exit codes (useful for scripts): `0` = all clean, `1` = blocked (needs
+administrator) or stopped by you, `2` = finished but some leftovers remain
+(usually unlocked by a restart, then run again).
+
 ## What it does, step by step
 
 0. **Safety backup** - exports the Tencent settings to `.reg` files first.

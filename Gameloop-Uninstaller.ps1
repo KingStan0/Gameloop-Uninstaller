@@ -53,6 +53,9 @@ $script:TempBase = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) { $env:TEMP
 # Accent color for headers (change in one place to re-theme)
 $script:Accent = 'Cyan'
 
+# Exit code for automation: 0 = clean, 1 = blocked/aborted, 2 = remnants remain.
+$script:ExitCode = 0
+
 # Live counters for the end-of-run summary panel
 $script:Stats = [ordered]@{
     Processes = 0; Services = 0; Firewall = 0; Tasks = 0; Startup = 0
@@ -353,7 +356,7 @@ if (-not $SkipOfficialUninstaller) {
                             if ([string]::IsNullOrWhiteSpace($us)) { $us = $uninstall }
                             if ($us -match '"([^"]+\.exe)"') { $official += $Matches[1] }
                             elseif ($us -match "'([^']+\.exe)'") { $official += $Matches[1] }
-                            elseif ($us -match '([A-Z]:\\[^\s]+\.exe)') { $official += $Matches[1] }
+                            elseif ($us -match '([A-Z]:\\[^\s]+\.exe)') { $official += $Matches[1].Trim('"',"'",',',';') }
                         }
                     } catch {}
                 }
@@ -782,13 +785,26 @@ if ($WhatIfPreference) {
     }
     $leftoverSvcs = @(Get-Service -Name @("GameLoopService","GLABoxSup","QMEmulatorService","aow_drv") -ErrorAction SilentlyContinue)
     $leftoverProcs = @(Get-Process -Name @("GameLoop","GameLoopEmulator","aow_exe","QMEmulatorService","AndroidEmulatorEn") -ErrorAction SilentlyContinue)
-    if ($leftover.Count -eq 0 -and $leftoverSvcs.Count -eq 0 -and $leftoverProcs.Count -eq 0) {
+    # Registry re-check: the main GameLoop keys should be gone too.
+    $leftoverReg = @(
+        "HKCU:\Software\Tencent\GameLoop", "HKCU:\Software\Tencent\MobileGamePC", "HKCU:\Software\Tencent\TGB",
+        "HKLM:\SOFTWARE\Tencent\GameLoop", "HKLM:\SOFTWARE\Tencent\MobileGamePC", "HKLM:\SOFTWARE\Tencent\TGB",
+        "HKLM:\SOFTWARE\WOW6432Node\Tencent\GameLoop", "HKLM:\SOFTWARE\WOW6432Node\Tencent\MobileGamePC", "HKLM:\SOFTWARE\WOW6432Node\Tencent\TGB",
+        "HKCR:\GameLoop",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\GameLoop",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MobileGamePC"
+    ) | Where-Object { Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue }
+    $leftoverReg = @($leftoverReg)
+    if ($leftover.Count -eq 0 -and $leftoverSvcs.Count -eq 0 -and $leftoverProcs.Count -eq 0 -and $leftoverReg.Count -eq 0) {
         Write-Ok "all clean - no GameLoop leftovers found anywhere"
     } else {
         Write-Host "  Almost there - a few things need attention:" -ForegroundColor Yellow
         if ($leftover.Count -gt 0) { Write-Warning ("  Folders still there (a restart usually unlocks them): " + ($leftover -join ", ")) }
         if ($leftoverSvcs.Count -gt 0) { Write-Warning ("  Helpers still installed: " + (($leftoverSvcs | Select-Object -ExpandProperty Name) -join ", ")) }
         if ($leftoverProcs.Count -gt 0) { Write-Warning ("  Apps still running (close them, then run this again): " + (($leftoverProcs | Select-Object -ExpandProperty ProcessName -Unique) -join ", ")) }
+        if ($leftoverReg.Count -gt 0) { Write-Warning ("  Settings still there: " + ($leftoverReg -join ", ")) }
+        # Signal automation callers (e.g. -Silent runs) that remnants remain.
+        $script:ExitCode = 2
     }
 }
 
@@ -830,4 +846,5 @@ if (-not $NoRebootPrompt -and -not $Silent -and -not $WhatIfPreference) {
     $rb = Read-Host "  Restart your PC now to finish the cleanup? (Y/N)"
     if ($rb -match '^[Yy]') { Restart-Computer -Force }
 }
+exit $script:ExitCode
 
