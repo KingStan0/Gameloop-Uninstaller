@@ -107,7 +107,7 @@ function Stop-GameLoopProcess {
     param([string[]]$Names)
     # Processes that exist outside GameLoop too - only kill when the exe lives
     # under a GameLoop / TxGameAssistant folder. Everything else is GameLoop-only.
-    $pathScoped = @('adb', 'VBoxNetDHCP', 'VBoxNetNAT', 'vbox-img', 'qqlogin')
+    $pathScoped = @('adb', 'VBoxNetDHCP', 'VBoxNetNAT', 'vbox-img', 'qqlogin', 'Uninstall')
     foreach ($name in $Names) {
         try {
             $base = $name -replace '\.exe$', ''
@@ -430,7 +430,11 @@ $killList = @(
     "GameLoader.exe","TSettingCenter.exe","syzs_dl_svr.exe","TBSWebRenderer.exe",
     "TitanService.exe","ProjectTitan.exe","Auxillary.exe","TP3Helper.exe",
     "cef_frame_demo.exe","cef_frame_render.exe","qqlogin.exe","txplatform.exe",
-    "tencentdl.exe","tensafe_1.exe","tensafe_2.exe","TUpdate.exe","TUninstall.exe"
+    "tencentdl.exe","tensafe_1.exe","tensafe_2.exe","TUpdate.exe","TUninstall.exe",
+    "SUPInstall.exe","SUPLoggerCtl.exe","SUPUninstall.exe","Uninstall.exe"
+    # NOTE: "Uninstall.exe" is path-scoped above: only stopped when running
+    # from a GameLoop folder, never another app's uninstaller. "Setup.exe"
+    # stays out for the same reason (covered by the folder catch-all sweep).
     # NOTE: deliberately NOT killing RuntimeBroker.exe, Synaptics.exe, conime.exe, dnf.exe - system / unrelated
 )
 Stop-GameLoopProcess -Names $killList
@@ -624,8 +628,9 @@ try {
     }
 } catch { Write-Warning "  HKU cleanup: $_" }
 
-# Per-value MuiCache cleanup (never the whole key): drop only GameLoop-related values
-foreach ($muiKey in @("HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache")) {
+# Per-value MuiCache cleanup (never the whole key): drop only GameLoop-related values.
+# Both registry views: HKCU (current user) and HKLM\SOFTWARE\Classes (HKCR merge side).
+foreach ($muiKey in @("HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache", "HKLM:\SOFTWARE\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache")) {
     try {
         if (Test-Path -LiteralPath $muiKey) {
             $muiProps = (Get-ItemProperty -LiteralPath $muiKey -ErrorAction SilentlyContinue).PSObject.Properties | Where-Object { $_.Name -notmatch '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$' }
